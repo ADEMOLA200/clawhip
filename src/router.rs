@@ -33,9 +33,7 @@ impl Router {
             .clone()
             .or_else(|| route.and_then(|route| route.format.clone()))
             .unwrap_or_else(|| self.config.defaults.format.clone());
-        let allow_dynamic_tokens = route
-            .map(|route| route.allow_dynamic_tokens)
-            .unwrap_or(false);
+        let allow_dynamic_tokens = self.allow_dynamic_tokens_for(event, route);
         let content = if let Some(template) = event
             .template
             .as_deref()
@@ -62,6 +60,22 @@ impl Router {
             _ => content,
         };
         Ok((channel, format, content))
+    }
+
+    fn allow_dynamic_tokens_for(&self, event: &IncomingEvent, route: Option<&RouteRule>) -> bool {
+        if let Some(route) = route {
+            return route.allow_dynamic_tokens;
+        }
+
+        if event.canonical_kind() == "custom"
+            && let Some(channel) = event.channel.as_deref()
+        {
+            return self.config.routes.iter().any(|route| {
+                route.allow_dynamic_tokens && route.channel.as_deref() == Some(channel)
+            });
+        }
+
+        false
     }
 
     fn route_for<'a>(&'a self, event: &IncomingEvent) -> Option<&'a RouteRule> {
@@ -238,6 +252,35 @@ mod tests {
         let (_, _, tmux_content) = router.preview(&tmux_event).await.unwrap();
         assert!(tmux_content.starts_with("<@botid> "));
         assert!(tmux_content.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn custom_send_can_inherit_dynamic_token_opt_in_from_channel_route() {
+        let config = AppConfig {
+            defaults: DefaultsConfig {
+                channel: Some("fallback".into()),
+                format: MessageFormat::Compact,
+            },
+            routes: vec![RouteRule {
+                event: "github.*".into(),
+                filter: [("repo".to_string(), "clawhip".to_string())]
+                    .into_iter()
+                    .collect(),
+                channel: Some("repo-channel".into()),
+                mention: None,
+                allow_dynamic_tokens: true,
+                format: Some(MessageFormat::Compact),
+                template: None,
+            }],
+            ..AppConfig::default()
+        };
+        let router = Router::new(Arc::new(config));
+        let event = IncomingEvent::custom(
+            Some("repo-channel".into()),
+            "hostname={sh:printf hi}".into(),
+        );
+        let (_, _, content) = router.preview(&event).await.unwrap();
+        assert_eq!(content, "hostname=hi");
     }
 
     #[tokio::test]
