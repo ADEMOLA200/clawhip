@@ -1,5 +1,5 @@
 #!/bin/bash
-# clawhip × OMX — Show last N lines of session output
+# clawhip × OMC — Show last N lines of session output
 # Usage: tail.sh <session-name> [lines]
 
 SESSION="${1:?Usage: $0 <session-name> [lines]}"

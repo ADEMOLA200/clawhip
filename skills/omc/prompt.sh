@@ -1,5 +1,5 @@
 #!/bin/bash
-# clawhip × OMX — Send a prompt to an existing OMX session
+# clawhip × OMC — Send a prompt to an existing OMC session
 # Usage: prompt.sh <session-name> "<prompt-text>"
 
 set -euo pipefail
@@ -13,10 +13,6 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 # Send the prompt text followed by Enter
-tmux send-keys -t "$SESSION" "$PROMPT" C-m
-
-# Wait briefly then send another Enter to ensure TUI processes input
-sleep 1
-tmux send-keys -t "$SESSION" C-m
+tmux send-keys -t "$SESSION" "$PROMPT" Enter
 
 echo "✓ Sent to $SESSION (unverified): ${PROMPT:0:80}..."

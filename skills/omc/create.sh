@@ -1,5 +1,5 @@
 #!/bin/bash
-# clawhip × OMX — Create a monitored OMX tmux session
+# clawhip × OMC — Create a monitored OMC tmux session
 # Usage: create.sh <session-name> <worktree-path> [channel-id] [mention]
 
 set -euo pipefail
@@ -9,10 +9,10 @@ WORKDIR="${2:?Usage: $0 <session-name> <worktree-path> [channel-id] [mention]}"
 CHANNEL="${3:-}"
 MENTION="${4:-}"
 
-KEYWORDS="${CLAWHIP_OMX_KEYWORDS:-error,Error,FAILED,PR created,panic,complete}"
-STALE_MIN="${CLAWHIP_OMX_STALE_MIN:-30}"
-OMX_FLAGS="${CLAWHIP_OMX_FLAGS:---madmax}"
-OMX_ENV="${CLAWHIP_OMX_ENV:-}"
+KEYWORDS="${CLAWHIP_OMC_KEYWORDS:-error,Error,FAILED,PR created,panic,complete}"
+STALE_MIN="${CLAWHIP_OMC_STALE_MIN:-30}"
+OMC_FLAGS="${CLAWHIP_OMC_FLAGS:---openclaw --madmax}"
+OMC_ENV="${CLAWHIP_OMC_ENV:-}"
 
 if [ ! -d "$WORKDIR" ]; then
   echo "❌ Directory not found: $WORKDIR"
@@ -31,12 +31,12 @@ ARGS=(
 [ -n "$CHANNEL" ] && ARGS+=(--channel "$CHANNEL")
 [ -n "$MENTION" ] && ARGS+=(--mention "$MENTION")
 
-# Build the omx command
-OMX_CMD="source ~/.zshrc"
-[ -n "$OMX_ENV" ] && OMX_CMD="$OMX_CMD && $OMX_ENV"
-OMX_CMD="$OMX_CMD && omx $OMX_FLAGS"
+# Build the omc command
+OMC_CMD="source ~/.zshrc"
+[ -n "$OMC_ENV" ] && OMC_CMD="$OMC_CMD && $OMC_ENV"
+OMC_CMD="$OMC_CMD && omc $OMC_FLAGS --worktree $WORKDIR"
 
-ARGS+=(-- "$OMX_CMD")
+ARGS+=(-- "$OMC_CMD")
 
 # Launch
 nohup clawhip "${ARGS[@]}" &>/dev/null &

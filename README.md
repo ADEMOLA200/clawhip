@@ -331,7 +331,15 @@ Safety:
 
 ## Install surface
 
-### Prebuilt binary installer (recommended)
+### From crates.io
+
+```bash
+cargo install clawhip
+```
+
+Published at [crates.io/crates/clawhip](https://crates.io/crates/clawhip). Requires Rust toolchain.
+
+### Prebuilt binary installer (recommended, no Rust needed)
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Yeachan-Heo/clawhip/releases/latest/download/clawhip-installer.sh | sh
@@ -403,3 +411,35 @@ clawhip github ...      # thin client GitHub event
 clawhip git ...         # thin client git event
 clawhip tmux ...        # thin client / wrapper surface
 ```
+
+## Good to use together
+
+clawhip pairs well with coding session tools that run in tmux:
+
+### [OMX (oh-my-codex)](https://github.com/Yeachan-Heo/oh-my-codex)
+
+OpenAI Codex wrapper with auto-monitoring. Launch monitored coding sessions:
+
+```bash
+clawhip tmux new -s issue-123 \
+  --channel YOUR_CHANNEL_ID \
+  --mention "<@your-user-id>" \
+  --keywords "error,PR created,complete" \
+  -- 'source ~/.zshrc && omx --madmax'
+```
+
+See [`skills/omx/`](skills/omx/) for ready-to-use scripts.
+
+### [OMC (oh-my-claudecode)](https://github.com/Yeachan-Heo/oh-my-claudecode)
+
+Claude Code wrapper with auto-monitoring. Launch monitored coding sessions:
+
+```bash
+clawhip tmux new -s issue-456 \
+  --channel YOUR_CHANNEL_ID \
+  --mention "<@your-user-id>" \
+  --keywords "error,PR created,complete" \
+  -- 'source ~/.zshrc && omc --openclaw --madmax'
+```
+
+See [`skills/omc/`](skills/omc/) for ready-to-use scripts.
