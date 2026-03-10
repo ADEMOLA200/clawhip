@@ -54,6 +54,20 @@ Operational flow:
 6. Confirm the merged status message arrives.
 7. Delete temporary branches if desired.
 
+### Native OMC / OMX contract
+
+- legacy wrapper `agent.*` emits
+- normalized `session.*` contract from OMC/OMX payloads
+
+Operational flow:
+
+1. Emit a legacy compatibility event such as `clawhip emit agent.finished --agent omx --session issue-65 --project clawhip --elapsed 42`.
+2. Confirm clawhip accepts it and renders a stable lifecycle message.
+3. Post one representative OMC payload carrying `signal.routeKey` to `/event`.
+4. Confirm clawhip normalizes it into the expected `session.*` route family.
+5. Post one representative OMX payload carrying `context.normalized_event` to `/event`.
+6. Confirm the rendered message stays low-noise and includes normalized metadata like repo/session/issue/PR when present.
+
 ### tmux presets
 
 - keyword detection

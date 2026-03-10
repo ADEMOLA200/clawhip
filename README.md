@@ -60,6 +60,7 @@ clawhip tmux watch -s issue-123 \
 ```
 
 See [`skills/omx/`](skills/omx/) for ready-to-use scripts.
+Native OMC/OMX routing now prefers the normalized [`session.*` contract](docs/native-event-contract.md); legacy `agent.*` wrapper emits remain supported for compatibility.
 
 ### [OMC (oh-my-claudecode)](https://github.com/Yeachan-Heo/oh-my-claudecode)
 
@@ -74,6 +75,7 @@ clawhip tmux new -s issue-456 \
 ```
 
 See [`skills/omc/`](skills/omc/) for ready-to-use scripts.
+Direct Slack/Discord notifications inside OMC/OMX should be treated as deprecated; emit native events and let clawhip own routing, mention policy, and formatting.
 
 ## Recipes
 
@@ -389,7 +391,54 @@ Verification:
 - create real empty commit in monitored repo
 - confirm final Discord body contains commit summary and mention
 
-### 7. Agent lifecycle preset family
+### 7. Native OMC / OMX session contract
+
+Canonical native routing for OMC/OMX uses `session.*` events after clawhip normalization.
+
+Accepted upstream inputs:
+- legacy wrapper emits like `agent.started` / `agent.finished` / `agent.failed`
+- OMC command/HTTP payloads with `signal.routeKey`
+- OMX hook payloads with `context.normalized_event`
+
+Canonical normalized events:
+- `session.started`
+- `session.blocked`
+- `session.finished`
+- `session.failed`
+- `session.retry-needed`
+- `session.pr-created`
+- `session.test-started`
+- `session.test-finished`
+- `session.test-failed`
+- `session.handoff-needed`
+
+Normalized metadata (when upstream provides it):
+- `tool`
+- `session_name`
+- `session_id`
+- `repo_name`
+- `repo_path`
+- `worktree_path`
+- `branch`
+- `issue_number`
+- `pr_number`
+- `pr_url`
+- `command`
+- `tool_name`
+- `test_runner`
+- `summary`
+- `error_message`
+- `event_timestamp`
+
+Route guidance:
+- prefer `session.*` for new native OMC/OMX routes
+- `agent.*` remains supported for clawhip-local wrapper compatibility
+- `agent.started|blocked|finished|failed` and `session.started|blocked|finished|failed` cross-match in routing for backward compatibility
+- prefer route filters like `tool`, `repo_name`, `session_name`, `issue_number`, and `branch` over brittle message parsing
+
+See [`docs/native-event-contract.md`](docs/native-event-contract.md) for the full normalization/deprecation notes.
+
+### 8. Agent lifecycle preset family
 
 Input:
 ```bash
@@ -411,7 +460,7 @@ Verification:
 - confirm final Discord body contains agent name and lifecycle state
 - confirm `agent.*` route rules match each event type
 
-### 8. tmux keyword preset
+### 9. tmux keyword preset
 
 Input:
 - built-in tmux monitor detects configured keyword
@@ -426,7 +475,7 @@ Verification:
 - print configured keyword in real monitored tmux session
 - confirm final Discord body in target channel
 
-### 9. tmux stale preset
+### 10. tmux stale preset
 
 Input:
 - built-in tmux stale detection
@@ -441,7 +490,7 @@ Verification:
 - let real tmux session idle past threshold
 - confirm final Discord body in target channel
 
-### 10. tmux wrapper / watch preset
+### 11. tmux wrapper / watch preset
 
 Input:
 ```bash
@@ -479,7 +528,7 @@ Verification:
 - emit keyword in pane
 - confirm Discord message body and mention
 
-### 11. install lifecycle preset
+### 12. install lifecycle preset
 
 Input:
 ```bash
@@ -519,6 +568,18 @@ Verification:
 - `agent.finished`
 - `agent.failed`
 
+### Native session family
+- `session.started`
+- `session.blocked`
+- `session.finished`
+- `session.failed`
+- `session.retry-needed`
+- `session.pr-created`
+- `session.test-started`
+- `session.test-finished`
+- `session.test-failed`
+- `session.handoff-needed`
+
 ### tmux family
 - `tmux.keyword`
 - `tmux.stale`
@@ -540,6 +601,14 @@ filter = { repo = "clawhip" }
 sink = "discord"
 channel = "1480171113253175356"
 mention = "<@1465264645320474637>"
+format = "compact"
+allow_dynamic_tokens = false
+
+[[routes]]
+event = "session.*"
+filter = { tool = "omx", repo_name = "clawhip" }
+sink = "discord"
+channel = "1480171113253175356"
 format = "compact"
 allow_dynamic_tokens = false
 
