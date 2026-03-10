@@ -378,6 +378,7 @@ pub enum ConfigCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::compat::from_incoming_event;
 
     #[test]
     fn parses_emit_subcommand_with_top_level_fields() {
@@ -455,6 +456,32 @@ mod tests {
                 .to_string()
                 .contains("emit fields must be provided as --key value pairs")
         );
+    }
+
+    #[test]
+    fn emit_agent_lifecycle_events_normalize_for_validation() {
+        let args = EmitArgs {
+            event_type: "agent.started".into(),
+            fields: vec![
+                "--agent".into(),
+                "omx".into(),
+                "--session".into(),
+                "issue-65".into(),
+                "--project".into(),
+                "clawhip".into(),
+            ],
+        };
+
+        let normalized = crate::events::normalize_event(args.into_event().expect("event"));
+        let typed = from_incoming_event(&normalized).expect("typed envelope");
+
+        assert_eq!(normalized.kind, "agent.started");
+        assert_eq!(
+            normalized.payload["status"],
+            Value::String("started".into())
+        );
+        assert_eq!(normalized.payload["tool"], Value::String("omx".into()));
+        assert_eq!(typed.metadata.priority, crate::event::EventPriority::Normal);
     }
 
     #[test]
