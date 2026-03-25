@@ -4,6 +4,8 @@ use std::path::Path;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use uuid::Uuid;
 
 use crate::Result;
 use crate::render::{DefaultRenderer, Renderer};
@@ -650,6 +652,7 @@ fn map_native_signal(raw: &str) -> Option<&'static str> {
 }
 
 fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind: &str) {
+    let first_seen_at = now_rfc3339();
     let tool = infer_tool(payload);
     let session_name = first_string(
         payload,
@@ -679,10 +682,25 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
             "/context/session_name",
         ],
     );
-    let project = first_string(payload, &["/project", "/projectName", "/project_name"]);
+    let project = first_string(
+        payload,
+        &[
+            "/project",
+            "/projectName",
+            "/project_name",
+            "/context/project",
+            "/context/projectName",
+            "/context/project_name",
+        ],
+    );
     let repo_name = first_string(
         payload,
-        &["/repo_name", "/context/repo_name", "/projectName"],
+        &[
+            "/repo_name",
+            "/context/repo_name",
+            "/projectName",
+            "/context/projectName",
+        ],
     )
     .or_else(|| {
         first_string(payload, &["/repo_path", "/context/repo_path"]).and_then(|path| {
@@ -694,11 +712,21 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
     });
     let repo_path = first_string(
         payload,
-        &["/repo_path", "/context/repo_path", "/projectPath"],
+        &[
+            "/repo_path",
+            "/context/repo_path",
+            "/projectPath",
+            "/context/projectPath",
+        ],
     );
     let worktree_path = first_string(
         payload,
-        &["/worktree_path", "/context/worktree_path", "/projectPath"],
+        &[
+            "/worktree_path",
+            "/context/worktree_path",
+            "/projectPath",
+            "/context/projectPath",
+        ],
     );
     let branch = first_string(payload, &["/branch", "/context/branch"]);
     let command = first_string(
@@ -745,6 +773,22 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
             .flatten()
     });
     let event_timestamp = first_string(payload, &["/event_timestamp", "/timestamp"]);
+    let event_id =
+        first_string(payload, &["/event_id"]).unwrap_or_else(|| Uuid::new_v4().to_string());
+    let correlation_id = first_string(payload, &["/correlation_id"])
+        .or_else(|| {
+            [
+                session_id.as_deref(),
+                session_name.as_deref(),
+                project.as_deref(),
+                repo_name.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| event_id.clone());
     let route_key = first_string(
         payload,
         &["/route_key", "/signal/routeKey", "/context/route_key"],
@@ -763,7 +807,13 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
             .find_map(extract_issue_number)
         });
     let mut pr_number = first_u64(payload, &["/pr_number", "/context/pr_number"]);
-    let pr_url = first_string(payload, &["/pr_url", "/context/pr_url", "/signal/prUrl"]);
+    let pr_url =
+        first_string(payload, &["/pr_url", "/context/pr_url", "/signal/prUrl"]).or_else(|| {
+            summary
+                .as_ref()
+                .filter(|value| extract_pr_number_from_url(value).is_some())
+                .cloned()
+        });
     if pr_number.is_none() {
         pr_number = pr_url.as_deref().and_then(extract_pr_number_from_url);
     }
@@ -785,6 +835,9 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
         .or_insert_with(|| json!(canonical_kind));
 
     insert_string_if_missing(object, "tool", tool);
+    insert_string_if_missing(object, "event_id", Some(event_id));
+    insert_string_if_missing(object, "correlation_id", Some(correlation_id));
+    insert_string_if_missing(object, "first_seen_at", Some(first_seen_at));
     if (canonical_kind.starts_with("agent.") || canonical_kind.starts_with("session."))
         && object.get("agent_name").is_none()
         && let Some(tool) = object
@@ -814,6 +867,12 @@ fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind
     insert_string_if_missing(object, "event_timestamp", event_timestamp);
     insert_string_if_missing(object, "route_key", route_key);
     insert_string_if_missing(object, "source", source);
+}
+
+fn now_rfc3339() -> String {
+    let now = OffsetDateTime::now_utc();
+    now.format(&Rfc3339)
+        .unwrap_or_else(|_| now.unix_timestamp().to_string())
 }
 
 fn infer_tool(payload: &Value) -> Option<String> {
@@ -1296,6 +1355,37 @@ mod tests {
     }
 
     #[test]
+    fn normalize_event_adds_ingress_metadata_and_exposes_it_in_template_context() {
+        let event = normalize_event(IncomingEvent::agent_started(
+            "worker-1".into(),
+            Some("sess-123".into()),
+            Some("my-repo".into()),
+            None,
+            Some("booted".into()),
+            None,
+            None,
+        ));
+        let context = event.template_context();
+
+        let event_id = event.payload["event_id"].as_str().unwrap();
+        assert!(!event_id.is_empty());
+        assert_eq!(event.payload["correlation_id"], json!("sess-123"));
+        assert!(
+            event
+                .payload
+                .get("first_seen_at")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert_eq!(context.get("event_id").map(String::as_str), Some(event_id));
+        assert_eq!(
+            context.get("correlation_id").map(String::as_str),
+            Some("sess-123")
+        );
+        assert!(context.contains_key("first_seen_at"));
+    }
+
+    #[test]
     fn normalize_event_maps_omx_native_contract_into_session_event() {
         let event = normalize_event(IncomingEvent {
             kind: "notify".into(),
@@ -1331,6 +1421,119 @@ mod tests {
         assert_eq!(
             event.payload["event_timestamp"],
             json!("2026-03-09T18:07:07.000Z")
+        );
+    }
+
+    #[test]
+    fn normalize_event_maps_omc_signal_route_key_into_session_event() {
+        let event = normalize_event(IncomingEvent {
+            kind: "post-tool-use".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "timestamp": "2026-03-09T18:01:58.000Z",
+                "signal": {
+                    "routeKey": "pull-request.created",
+                    "phase": "finished",
+                    "summary": "https://github.com/Yeachan-Heo/clawhip/pull/67"
+                },
+                "context": {
+                    "sessionId": "issue-65",
+                    "projectPath": "/repo/clawhip-worktrees/issue-65",
+                    "projectName": "clawhip"
+                }
+            }),
+        });
+
+        assert_eq!(event.kind, "session.pr-created");
+        assert_eq!(event.payload["tool"], json!("omc"));
+        assert_eq!(event.payload["session_id"], json!("issue-65"));
+        assert_eq!(event.payload["project"], json!("clawhip"));
+        assert_eq!(event.payload["repo_name"], json!("clawhip"));
+        assert_eq!(
+            event.payload["repo_path"],
+            json!("/repo/clawhip-worktrees/issue-65")
+        );
+        assert_eq!(
+            event.payload["worktree_path"],
+            json!("/repo/clawhip-worktrees/issue-65")
+        );
+        assert_eq!(event.payload["pr_number"], json!(67));
+        assert_eq!(
+            event.payload["pr_url"],
+            json!("https://github.com/Yeachan-Heo/clawhip/pull/67")
+        );
+        assert_eq!(event.payload["status"], json!("finished"));
+    }
+
+    #[test]
+    fn normalize_event_maps_omc_native_contract_into_session_event() {
+        let event = normalize_event(IncomingEvent {
+            kind: "post-tool-use".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "timestamp": "2026-03-09T18:01:58.000Z",
+                "signal": {
+                    "routeKey": "pull-request.created",
+                    "toolName": "Bash",
+                    "command": "gh pr create",
+                    "summary": "https://github.com/Yeachan-Heo/clawhip/pull/71"
+                },
+                "context": {
+                    "sessionId": "issue-65",
+                    "projectPath": "/repo/clawhip",
+                    "projectName": "clawhip"
+                }
+            }),
+        });
+
+        assert_eq!(event.kind, "session.pr-created");
+        assert_eq!(event.payload["tool"], json!("omc"));
+        assert_eq!(event.payload["session_id"], json!("issue-65"));
+        assert_eq!(event.payload["project"], json!("clawhip"));
+        assert_eq!(event.payload["repo_name"], json!("clawhip"));
+        assert_eq!(event.payload["repo_path"], json!("/repo/clawhip"));
+        assert_eq!(event.payload["worktree_path"], json!("/repo/clawhip"));
+        assert_eq!(event.payload["tool_name"], json!("Bash"));
+        assert_eq!(event.payload["command"], json!("gh pr create"));
+        assert_eq!(
+            event.payload["summary"],
+            json!("https://github.com/Yeachan-Heo/clawhip/pull/71")
+        );
+        assert_eq!(event.payload["pr_number"], json!(71));
+    }
+
+    #[test]
+    fn renders_omc_pr_created_event_using_contract_label() {
+        let event = normalize_event(IncomingEvent {
+            kind: "post-tool-use".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "timestamp": "2026-03-09T18:01:58.000Z",
+                "signal": {
+                    "routeKey": "pull-request.created",
+                    "phase": "finished",
+                    "summary": "https://github.com/Yeachan-Heo/clawhip/pull/67"
+                },
+                "context": {
+                    "sessionId": "issue-65",
+                    "projectPath": "/repo/clawhip-worktrees/issue-65",
+                    "projectName": "clawhip"
+                }
+            }),
+        });
+
+        assert_eq!(
+            event.render_default(&MessageFormat::Compact).unwrap(),
+            "omc issue-65 pr-created (repo=clawhip, issue=#65, pr=#67, summary=https://github.com/Yeachan-Heo/clawhip/pull/67)"
         );
     }
 
