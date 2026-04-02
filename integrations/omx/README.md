@@ -10,7 +10,7 @@ For new clawhip + OMX installs, this bridge is the default/recommended integrati
 
 - `clawhip-sdk.mjs` — small OMX-facing client that hides clawhip discovery + transport details
 - `clawhip-hook.mjs` — sample `.omx/hooks/*.mjs` plugin that forwards contract-compliant events to clawhip
-- `install-hook.sh` — copies the sample hook + SDK into an OMX workspace
+- `install-hook.sh` — copies the sample hook into `.omx/hooks/` and the SDK into `.omx/hooks/lib/` so `omx hooks validate` only sees real plugins
 
 ## Transport and discovery order
 
@@ -36,7 +36,7 @@ export CLAWHIP_OMX_TRANSPORT=cli   # or http
 ./integrations/omx/install-hook.sh /path/to/repo/.omx/hooks
 ```
 
-Then validate inside that OMX workspace:
+The installer keeps the SDK outside the top-level plugin scan path so validation/tests stay clean. Then validate inside that OMX workspace:
 
 ```bash
 omx hooks validate

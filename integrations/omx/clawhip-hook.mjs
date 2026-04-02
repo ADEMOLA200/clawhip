@@ -1,4 +1,4 @@
-import { createClawhipOmxClient } from './clawhip-sdk.mjs';
+import { createClawhipOmxClient } from './lib/clawhip-sdk.mjs';
 
 const clientPromise = createClawhipOmxClient();
 
