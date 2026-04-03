@@ -138,6 +138,17 @@ Prefer filters on structured metadata such as:
 
 Avoid routing on rendered message text.
 
+### Operator rails
+
+For native OMC/OMX routing, treat these as the non-negotiable defaults:
+
+- route native session traffic on `session.*` first; keep `agent.*` only for compatibility with older local wrapper emits
+- filter native session traffic on `repo_name`, not `repo`
+- if you also filter by tool, use `tool = "omx"` or `tool = "omc"`
+- if a native session route misses and `[defaults].channel` is configured, clawhip can still deliver to that default channel; wrong-channel delivery usually means route mismatch, not transport failure
+
+`repo` is still common on git/GitHub payloads, but the native OMC/OMX normalization contract promotes `repo_name` onto the top-level session payload. That is why a route like `filter = { tool = "omx", repo = "clawhip" }` can keep matching GitHub/git events while missing native session traffic.
+
 ## Formatting guidance
 
 Default clawhip session formatting is intentionally low-noise:

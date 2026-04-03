@@ -81,6 +81,47 @@ clawhip tmux new -s issue-456 \
 See [`skills/omc/`](skills/omc/) for ready-to-use scripts.
 Direct Slack/Discord notifications inside OMC/OMX should be treated as deprecated; emit native events and let clawhip own routing, mention policy, and formatting.
 
+#### Gajae operator setup → verify → fix
+
+For OMC/OMX-integrated setups, clawhip is the source of truth for routing doctrine and troubleshooting. Keep session skills focused on launch mechanics, then use clawhip docs for the operational rails:
+
+- quick entrypoint: this README section
+- detailed OMX runbook: [`integrations/omx/README.md`](integrations/omx/README.md)
+- native routing/reference contract: [`docs/native-event-contract.md`](docs/native-event-contract.md)
+
+**Setup**
+1. Confirm the daemon you plan to use is the one you expect:
+   ```bash
+   clawhip --version
+   clawhip status
+   ```
+2. For OMX, install the native hook bridge into the target workspace, then validate it:
+   ```bash
+   ./integrations/omx/install-hook.sh /path/to/repo/.omx/hooks
+   omx hooks validate
+   omx hooks test
+   ```
+3. Add an explicit native session route. Use `event = "session.*"` and filter on `repo_name`, not `repo`:
+   ```toml
+   [[routes]]
+   event = "session.*"
+   filter = { tool = "omx", repo_name = "clawhip" }
+   channel = "1480171113253175356"
+   format = "compact"
+   ```
+   For OMC-native session traffic, keep the same event family and switch the tool filter to `omc` when needed.
+4. Leave `[defaults].channel` configured only as a fallback safety net, not as your primary session-routing policy.
+
+**Verify**
+- Trigger a real OMC/OMX session event and confirm it lands in the intended route channel.
+- If the event lands in the default channel instead, treat that as a route miss first.
+- If `clawhip cron run` is part of your operator flow, verify `[[cron.jobs]]` exists before treating the command as meaningful.
+
+**Fix**
+- **daemon version/runtime mismatch** → reinstall or update clawhip, then restart the daemon so the running binary matches the hook/runtime you just installed.
+- **hook installed but no native session delivery** → verify both the hook install and a matching `session.*` route exist.
+- **wrong repo filter** → replace `repo = "..."` with `repo_name = "..."` for native session routes.
+
 ## Recipes
 
 ### Dev-channel follow-up cron for Clawdbot
@@ -145,6 +186,7 @@ Operational notes:
 - mention your Clawdbot/OpenClaw bot user so the bot actually wakes up and acts
 - use plain operational language like "check open PRs/issues", "review blockers", and "continue stalled work"
 - this keeps scheduling outside the agent loop: cron handles timing, clawhip handles delivery, Discord handles the handoff
+- if you want `clawhip cron run` to do anything useful, define `[[cron.jobs]]` first; an empty cron section gives clawhip nothing meaningful to execute
 
 ## Filesystem-offloaded memory pattern
 
