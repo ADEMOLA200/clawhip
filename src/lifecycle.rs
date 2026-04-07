@@ -79,7 +79,10 @@ fn find_repo_root() -> Result<PathBuf> {
             return Ok(parent.to_path_buf());
         }
     }
-    Err(anyhow!("could not locate clawhip repo root; run from the git clone or ensure cargo is available").into())
+    Err(anyhow!(
+        "could not locate clawhip repo root; run from the git clone or ensure cargo is available"
+    )
+    .into())
 }
 
 pub fn uninstall(remove_systemd: bool, remove_config: bool) -> Result<()> {

@@ -115,9 +115,7 @@ pub async fn run_checker(
     }
 }
 
-pub async fn check_latest_version(
-    http: &reqwest::Client,
-) -> Result<Option<(String, String)>> {
+pub async fn check_latest_version(http: &reqwest::Client) -> Result<Option<(String, String)>> {
     match check_latest_release(http).await? {
         Some(release) => {
             let version = normalize_version(&release.tag_name);
@@ -159,11 +157,10 @@ pub async fn approve_update(
     let channel = config.update.channel.clone();
     let result_version = update.latest_version.clone();
 
-    let result = tokio::task::spawn_blocking(move || {
-        crate::lifecycle::update_from_repo(auto_restart)
-    })
-    .await
-    .map_err(|error| format!("update task panicked: {error}"))?;
+    let result =
+        tokio::task::spawn_blocking(move || crate::lifecycle::update_from_repo(auto_restart))
+            .await
+            .map_err(|error| format!("update task panicked: {error}"))?;
 
     match &result {
         Ok(()) => {
@@ -201,7 +198,8 @@ fn normalize_version(tag: &str) -> String {
 
 pub fn version_is_newer(tag: &str) -> bool {
     let latest = normalize_version(tag);
-    compare_versions(&latest, VERSION).is_some_and(|ordering| ordering == std::cmp::Ordering::Greater)
+    compare_versions(&latest, VERSION)
+        .is_some_and(|ordering| ordering == std::cmp::Ordering::Greater)
 }
 
 fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
