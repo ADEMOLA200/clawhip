@@ -210,6 +210,92 @@ pub fn incoming_event_from_native_hook_json(
     if let Some(tool_name) = tool_name {
         normalized.insert("tool_name".into(), json!(tool_name));
     }
+    copy_string_field(
+        &mut normalized,
+        payload,
+        "tmux_session",
+        &[
+            "/tmux_session",
+            "/tmuxSession",
+            "/context/tmux_session",
+            "/context/tmuxSession",
+            "/event_payload/tmux_session",
+            "/event_payload/tmuxSession",
+            "/event_payload/tmux/session",
+        ],
+    );
+    copy_string_field(
+        &mut normalized,
+        payload,
+        "tmux_window",
+        &[
+            "/tmux_window",
+            "/tmuxWindow",
+            "/context/tmux_window",
+            "/context/tmuxWindow",
+            "/event_payload/tmux_window",
+            "/event_payload/tmuxWindow",
+            "/event_payload/tmux/window",
+        ],
+    );
+    copy_string_field(
+        &mut normalized,
+        payload,
+        "tmux_pane",
+        &[
+            "/tmux_pane",
+            "/tmuxPane",
+            "/context/tmux_pane",
+            "/context/tmuxPane",
+            "/event_payload/tmux_pane",
+            "/event_payload/tmuxPane",
+            "/event_payload/tmux/pane",
+        ],
+    );
+    copy_string_field(
+        &mut normalized,
+        payload,
+        "tmux_pane_tty",
+        &[
+            "/tmux_pane_tty",
+            "/tmuxPaneTty",
+            "/context/tmux_pane_tty",
+            "/context/tmuxPaneTty",
+            "/event_payload/tmux_pane_tty",
+            "/event_payload/tmuxPaneTty",
+            "/event_payload/tmux/pane_tty",
+            "/event_payload/tmux/paneTty",
+        ],
+    );
+    copy_bool_field(
+        &mut normalized,
+        payload,
+        "tmux_attached",
+        &[
+            "/tmux_attached",
+            "/tmuxAttached",
+            "/context/tmux_attached",
+            "/context/tmuxAttached",
+            "/event_payload/tmux_attached",
+            "/event_payload/tmuxAttached",
+            "/event_payload/tmux/attached",
+        ],
+    );
+    copy_u64_field(
+        &mut normalized,
+        payload,
+        "tmux_client_count",
+        &[
+            "/tmux_client_count",
+            "/tmuxClientCount",
+            "/context/tmux_client_count",
+            "/context/tmuxClientCount",
+            "/event_payload/tmux_client_count",
+            "/event_payload/tmuxClientCount",
+            "/event_payload/tmux/client_count",
+            "/event_payload/tmux/clientCount",
+        ],
+    );
 
     apply_augmentation(
         &mut normalized,
@@ -279,6 +365,27 @@ function loadProjectMetadata(root) {
   return parseJson(readFileSync(path, 'utf8'), null);
 }
 
+function parseIntegerish(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  return Number.parseInt(trimmed, 10);
+}
+
+function parseBoolish(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  if (['1', 'true', 'yes', 'attached'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'detached'].includes(normalized)) return false;
+  return null;
+}
+
 function mergeAdditive(base, extra) {
   if (!extra || typeof extra !== 'object' || Array.isArray(extra)) return base;
   const output = { ...base };
@@ -325,6 +432,92 @@ async function collectAugmentation(root, payload) {
   return Object.keys(merged).length > 0 ? merged : null;
 }
 
+function collectTmuxMetadata(input, cwd) {
+  const sources = [input, input?.context, input?.event_payload, input?.payload]
+    .filter((value) => value && typeof value === 'object');
+  const tmuxSources = [
+    ...sources,
+    ...sources
+      .map((value) => value.tmux)
+      .filter((value) => value && typeof value === 'object'),
+  ];
+
+  function pickString(keys) {
+    for (const source of tmuxSources) {
+      for (const key of keys) {
+        const value = source[key];
+        if (typeof value === 'string' && value.trim()) {
+          return value.trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  function pickInteger(keys) {
+    for (const source of tmuxSources) {
+      for (const key of keys) {
+        const value = parseIntegerish(source[key]);
+        if (value !== null) return value;
+      }
+    }
+    return null;
+  }
+
+  function pickBoolean(keys) {
+    for (const source of tmuxSources) {
+      for (const key of keys) {
+        const value = parseBoolish(source[key]);
+        if (value !== null) return value;
+      }
+    }
+    return null;
+  }
+
+  const direct = {};
+  const tmuxSession = pickString(['tmux_session', 'tmuxSession', 'session']);
+  const tmuxWindow = pickString(['tmux_window', 'tmuxWindow', 'window']);
+  const tmuxPane = pickString(['tmux_pane', 'tmuxPane', 'pane']);
+  const tmuxPaneTty = pickString(['tmux_pane_tty', 'tmuxPaneTty', 'pane_tty', 'paneTty']);
+  const tmuxClientCount = pickInteger(['tmux_client_count', 'tmuxClientCount', 'client_count', 'clientCount']);
+  const tmuxAttached = pickBoolean(['tmux_attached', 'tmuxAttached', 'attached']);
+
+  if (tmuxSession) direct.tmux_session = tmuxSession;
+  if (tmuxWindow) direct.tmux_window = tmuxWindow;
+  if (tmuxPane) direct.tmux_pane = tmuxPane;
+  if (tmuxPaneTty) direct.tmux_pane_tty = tmuxPaneTty;
+  if (tmuxClientCount !== null) direct.tmux_client_count = tmuxClientCount;
+  if (tmuxAttached !== null) direct.tmux_attached = tmuxAttached;
+
+  const tmuxTarget = process.env.TMUX_PANE || '';
+  if (process.env.TMUX || tmuxTarget) {
+    const result = spawnSync(
+      'tmux',
+      [
+        'display-message',
+        '-p',
+        ...(tmuxTarget ? ['-t', tmuxTarget] : []),
+        '#{session_name}\u001f#{window_index}\u001f#{pane_id}\u001f#{pane_tty}\u001f#{session_attached}',
+      ],
+      { cwd, encoding: 'utf8' },
+    );
+    if (result.status === 0) {
+      const [session, window, pane, paneTty, attachedCount] = result.stdout.trim().split('\u001f');
+      const clientCount = parseIntegerish(attachedCount);
+      if (session && !direct.tmux_session) direct.tmux_session = session;
+      if (window && !direct.tmux_window) direct.tmux_window = window;
+      if (pane && !direct.tmux_pane) direct.tmux_pane = pane;
+      if (paneTty && !direct.tmux_pane_tty) direct.tmux_pane_tty = paneTty;
+      if (clientCount !== null) {
+        if (direct.tmux_client_count === undefined) direct.tmux_client_count = clientCount;
+        if (direct.tmux_attached === undefined) direct.tmux_attached = clientCount > 0;
+      }
+    }
+  }
+
+  return Object.keys(direct).length > 0 ? direct : null;
+}
+
 async function main() {
   const provider = arg('--provider') || process.env.CLAWHIP_PROVIDER || 'unknown';
   const cwd = process.cwd();
@@ -332,6 +525,7 @@ async function main() {
   const input = parseJson(raw, {});
   const repoRoot = runGit(['rev-parse', '--show-toplevel'], cwd) || cwd;
   const projectMetadata = loadProjectMetadata(repoRoot);
+  const tmuxMetadata = collectTmuxMetadata(input, cwd);
   const eventName =
     input.hook_event_name || input.hookEventName || input.event_name || input.event || 'unknown';
   const payload = {
@@ -353,6 +547,9 @@ async function main() {
     prompt: input.prompt,
     event_payload: input,
   };
+  if (tmuxMetadata) {
+    Object.assign(payload, tmuxMetadata);
+  }
 
   if (projectMetadata && typeof projectMetadata === 'object') {
     payload.project_metadata = projectMetadata;
@@ -543,6 +740,64 @@ fn first_string(payload: &Value, pointers: &[&str]) -> Option<String> {
     })
 }
 
+fn first_bool(payload: &Value, pointers: &[&str]) -> Option<bool> {
+    pointers.iter().find_map(|pointer| {
+        payload.pointer(pointer).and_then(|value| match value {
+            Value::Bool(value) => Some(*value),
+            Value::Number(value) => value.as_u64().map(|number| number != 0),
+            Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "attached" => Some(true),
+                "0" | "false" | "no" | "detached" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        })
+    })
+}
+
+fn first_u64(payload: &Value, pointers: &[&str]) -> Option<u64> {
+    pointers.iter().find_map(|pointer| {
+        payload.pointer(pointer).and_then(|value| match value {
+            Value::Number(number) => number.as_u64(),
+            Value::String(value) => value.trim().parse().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn copy_string_field(
+    normalized: &mut Map<String, Value>,
+    payload: &Value,
+    key: &str,
+    pointers: &[&str],
+) {
+    if let Some(value) = first_string(payload, pointers) {
+        normalized.insert(key.to_string(), json!(value));
+    }
+}
+
+fn copy_bool_field(
+    normalized: &mut Map<String, Value>,
+    payload: &Value,
+    key: &str,
+    pointers: &[&str],
+) {
+    if let Some(value) = first_bool(payload, pointers) {
+        normalized.insert(key.to_string(), json!(value));
+    }
+}
+
+fn copy_u64_field(
+    normalized: &mut Map<String, Value>,
+    payload: &Value,
+    key: &str,
+    pointers: &[&str],
+) {
+    if let Some(value) = first_u64(payload, pointers) {
+        normalized.insert(key.to_string(), json!(value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,5 +903,38 @@ mod tests {
         let script = generated_hook_script();
         assert!(script.contains(".clawhip/hooks/augment"));
         assert!(script.contains("clawhip', ['native', 'hook'"));
+    }
+
+    #[test]
+    fn preserves_tmux_metadata_from_native_payloads() {
+        let event = incoming_event_from_native_hook_json(&json!({
+            "provider": "codex",
+            "directory": "/repo/clawhip",
+            "event_name": "SessionStart",
+            "tmux_session": "omx-clawhip-dev",
+            "tmux_window": "3",
+            "tmux_pane": "%17",
+            "tmux_pane_tty": "/dev/pts/5",
+            "tmux_attached": true,
+            "tmux_client_count": 2,
+            "event_payload": {}
+        }))
+        .expect("event");
+
+        assert_eq!(event.payload["tmux_session"], json!("omx-clawhip-dev"));
+        assert_eq!(event.payload["tmux_window"], json!("3"));
+        assert_eq!(event.payload["tmux_pane"], json!("%17"));
+        assert_eq!(event.payload["tmux_pane_tty"], json!("/dev/pts/5"));
+        assert_eq!(event.payload["tmux_attached"], json!(true));
+        assert_eq!(event.payload["tmux_client_count"], json!(2));
+    }
+
+    #[test]
+    fn generated_hook_script_mentions_tmux_metadata_collection() {
+        let script = generated_hook_script();
+        assert!(script.contains("collectTmuxMetadata"));
+        assert!(script.contains("tmux_session"));
+        assert!(script.contains("tmux_client_count"));
+        assert!(script.contains("tmux_attached"));
     }
 }
