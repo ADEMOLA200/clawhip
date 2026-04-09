@@ -1897,7 +1897,10 @@ mod tests {
         assert_eq!(event.payload["tmux_pane_tty"], json!("/dev/pts/42"));
         assert_eq!(event.payload["tmux_attached"], json!(false));
         assert_eq!(event.payload["tmux_client_count"], json!(0));
-        assert_eq!(context.get("session").map(String::as_str), Some("issue-180"));
+        assert_eq!(
+            context.get("session").map(String::as_str),
+            Some("issue-180")
+        );
         assert_eq!(
             context.get("tmux_pane_tty").map(String::as_str),
             Some("/dev/pts/42")
