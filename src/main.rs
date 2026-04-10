@@ -309,18 +309,33 @@ fn apply_setup_args(config: &mut AppConfig, args: SetupArgs) -> Result<()> {
         config.scaffold_webhook_quickstart(webhook)?;
     }
     if let Some(bot_token) = args.bot_token {
-        config.set_discord_bot_token(bot_token);
+        config.set_discord_bot_token(require_non_empty_setup_value("--bot-token", bot_token)?);
     }
     if let Some(default_channel) = args.default_channel {
-        config.set_default_channel(default_channel);
+        config.set_default_channel(require_non_empty_setup_value(
+            "--default-channel",
+            default_channel,
+        )?);
     }
     if let Some(default_format) = args.default_format {
         config.set_default_format(default_format);
     }
     if let Some(daemon_base_url) = args.daemon_base_url {
-        config.set_daemon_base_url(daemon_base_url);
+        config.set_daemon_base_url(require_non_empty_setup_value(
+            "--daemon-base-url",
+            daemon_base_url,
+        )?);
     }
     Ok(())
+}
+
+fn require_non_empty_setup_value(flag: &str, value: String) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(format!("{flag} requires a non-empty value").into())
+    } else {
+        Ok(trimmed.to_string())
+    }
 }
 
 async fn send_incoming_event(client: &DaemonClient, event: IncomingEvent) -> Result<()> {

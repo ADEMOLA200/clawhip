@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde_json::Value;
 
 use crate::events::MessageFormat;
@@ -43,6 +43,11 @@ pub enum Commands {
     /// Check daemon health/status.
     Status,
     /// Scaffold common setup presets without editing advanced routes or monitors.
+    #[command(
+        arg_required_else_help = true,
+        about = "Scaffold the bounded quickstart preset catalog",
+        long_about = "Scaffold the bounded quickstart preset catalog. Advanced routes and monitors still require manual config editing or the bounded clawhip config editor."
+    )]
     Setup(SetupArgs),
     /// Send a custom event to the local daemon.
     Send {
@@ -136,37 +141,13 @@ pub enum Commands {
 }
 
 #[derive(Debug, Clone, Args)]
-#[group(required = true, multiple = true)]
-pub struct SetupArgs {
-    /// Discord webhook quickstart URL.
-    #[arg(long)]
-    pub webhook: Option<String>,
-    /// Discord bot token for channel delivery.
-    #[arg(long = "bot-token")]
-    pub bot_token: Option<String>,
-    /// Default Discord channel ID.
-    #[arg(long = "default-channel")]
-    pub default_channel: Option<String>,
-    /// Default message format.
-    #[arg(long = "default-format", value_enum)]
-    pub default_format: Option<MessageFormat>,
-    /// Base URL for local daemon commands.
-    #[arg(long = "daemon-base-url")]
-    pub daemon_base_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Args)]
 pub struct EmitArgs {
     pub event_type: String,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
-#[command(
-    arg_required_else_help = true,
-    long_about = "Scaffold the bounded quickstart preset catalog. Advanced routes and monitors still require manual config editing or the bounded clawhip config editor."
-)]
+#[derive(Debug, Clone, Args)]
 pub struct SetupArgs {
     /// Set or update the canonical Discord webhook quickstart route.
     #[arg(long)]
@@ -715,7 +696,7 @@ pub enum ConfigCommand {
 mod tests {
     use super::*;
     use crate::event::compat::from_incoming_event;
-    use clap::error::ErrorKind;
+    use clap::{CommandFactory, error::ErrorKind};
 
     #[test]
     fn parses_emit_subcommand_with_top_level_fields() {

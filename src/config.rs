@@ -430,17 +430,6 @@ pub fn default_sink_name() -> String {
     "discord".to_string()
 }
 
-const CONFIG_EDITOR_MENU: [&str; 8] = [
-    "1) Set Discord bot token",
-    "2) Set daemon base URL",
-    "3) Set default channel",
-    "4) Set default format",
-    "5) Set Discord webhook quickstart route",
-    "6) Save and exit",
-    "7) Exit without saving",
-    "8) Print manual config template hint",
-];
-
 const DISCORD_TOKEN_ENV_VARS: [&str; 2] = ["DISCORD_TOKEN", "CLAWHIP_DISCORD_BOT_TOKEN"];
 pub const CONFIG_EDITOR_MENU_ITEMS: [&str; 8] = [
     "Set Discord bot token",
@@ -452,25 +441,6 @@ pub const CONFIG_EDITOR_MENU_ITEMS: [&str; 8] = [
     "Exit without saving",
     "Print manual config template hint",
 ];
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SetupEdits {
-    pub webhook: Option<String>,
-    pub bot_token: Option<String>,
-    pub default_channel: Option<String>,
-    pub default_format: Option<MessageFormat>,
-    pub daemon_base_url: Option<String>,
-}
-
-impl SetupEdits {
-    pub fn is_empty(&self) -> bool {
-        self.webhook.is_none()
-            && self.bot_token.is_none()
-            && self.default_channel.is_none()
-            && self.default_format.is_none()
-            && self.daemon_base_url.is_none()
-    }
-}
 
 fn merge_legacy_discord_field(
     field: &str,
@@ -733,32 +703,6 @@ impl AppConfig {
 
         Ok(())
     }
-
-    pub fn scaffold_webhook_quickstart(&mut self, webhook: String) -> Result<()> {
-        let webhook = normalize_text(Some(webhook));
-        if webhook.is_none() {
-            return Ok(());
-        }
-
-        if let Some(webhook) = webhook {
-            self.scaffold_webhook_quickstart(webhook)?;
-        }
-        if let Some(bot_token) = bot_token {
-            self.providers.discord.bot_token = Some(bot_token);
-        }
-        if let Some(default_channel) = default_channel {
-            self.defaults.channel = Some(default_channel);
-        }
-        if let Some(default_format) = default_format {
-            self.defaults.format = default_format;
-        }
-        if let Some(daemon_base_url) = daemon_base_url {
-            self.daemon.base_url = daemon_base_url;
-        }
-
-        Ok(())
-    }
-
     pub fn scaffold_webhook_quickstart(&mut self, webhook: String) -> Result<()> {
         let webhook = normalize_text(Some(webhook)).ok_or_else(|| {
             "setup requires a non-empty webhook URL when --webhook is supplied".to_string()
@@ -797,25 +741,6 @@ impl AppConfig {
                     .into(),
             ),
         }
-
-        if let Some(index) = matches.first().copied() {
-            self.routes[index].webhook = webhook;
-            return Ok(());
-        }
-
-        self.routes.push(RouteRule {
-            event: "*".to_string(),
-            filter: BTreeMap::new(),
-            sink: default_sink_name(),
-            channel: None,
-            webhook,
-            slack_webhook: None,
-            mention: None,
-            allow_dynamic_tokens: false,
-            format: None,
-            template: None,
-        });
-        Ok(())
     }
 
     pub fn set_discord_bot_token(&mut self, bot_token: String) {
@@ -1400,16 +1325,16 @@ mod tests {
     #[test]
     fn config_editor_menu_matches_bounded_eight_item_surface() {
         assert_eq!(
-            CONFIG_EDITOR_MENU,
+            CONFIG_EDITOR_MENU_ITEMS,
             [
-                "1) Set Discord bot token",
-                "2) Set daemon base URL",
-                "3) Set default channel",
-                "4) Set default format",
-                "5) Set Discord webhook quickstart route",
-                "6) Save and exit",
-                "7) Exit without saving",
-                "8) Print manual config template hint",
+                "Set Discord bot token",
+                "Set daemon base URL",
+                "Set default channel",
+                "Set default format",
+                "Set Discord webhook quickstart route",
+                "Save and exit",
+                "Exit without saving",
+                "Print manual config template hint",
             ]
         );
     }
