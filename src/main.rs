@@ -1,3 +1,4 @@
+mod binding_verify;
 mod cli;
 mod client;
 mod config;
@@ -32,10 +33,11 @@ use clap::Parser;
 use crate::cli::{
     AgentCommands, Cli, Commands, ConfigCommand, CronCommands, ExplainArgs, GitCommands,
     GithubCommands, HooksCommands, MemoryCommands, NativeCommands, PluginCommands, ReleaseCommands,
-    TmuxCommands, UpdateCommands,
+    SetupArgs, TmuxCommands, UpdateCommands, VerifyBindingsArgs,
 };
 use crate::client::DaemonClient;
 use crate::config::{AppConfig, SetupEdits};
+use crate::discord::DiscordClient;
 use crate::event::compat::from_incoming_event;
 use crate::events::IncomingEvent;
 
@@ -78,20 +80,7 @@ async fn real_main() -> Result<()> {
             send_incoming_event(&client, args.into_event()?).await
         }
         Commands::Explain(args) => run_explain(config.as_ref(), args),
-        Commands::Setup(args) => {
-            let mut editable = AppConfig::load_or_default(&config_path)?;
-            editable.apply_setup_edits(SetupEdits {
-                webhook: args.webhook,
-                bot_token: args.bot_token,
-                default_channel: args.default_channel,
-                default_format: args.default_format,
-                daemon_base_url: args.daemon_base_url,
-            })?;
-            editable.validate()?;
-            editable.save(&config_path)?;
-            println!("Saved {}", config_path.display());
-            Ok(())
-        }
+        Commands::Setup(args) => run_setup(args, &config_path).await,
         Commands::Send { channel, message } => {
             let client = DaemonClient::from_config(config.as_ref());
             send_incoming_event(&client, IncomingEvent::custom(channel, message)).await
@@ -305,6 +294,7 @@ async fn real_main() -> Result<()> {
                 println!("{}", config_path.display());
                 Ok(())
             }
+            ConfigCommand::VerifyBindings(args) => run_verify_bindings(config, args).await,
         },
         Commands::Plugin { command } => match command {
             PluginCommands::List => {
@@ -344,6 +334,127 @@ async fn real_main() -> Result<()> {
 async fn send_incoming_event(client: &DaemonClient, event: IncomingEvent) -> Result<()> {
     let event = prepare_event(event)?;
     client.send_event(&event).await
+}
+
+async fn run_setup(args: SetupArgs, config_path: &std::path::Path) -> Result<()> {
+    let mut editable = AppConfig::load_or_default(config_path)?;
+
+    let standard_edits = SetupEdits {
+        webhook: args.webhook,
+        bot_token: args.bot_token,
+        default_channel: args.default_channel,
+        default_format: args.default_format,
+        daemon_base_url: args.daemon_base_url,
+    };
+
+    // Must have at least one meaningful action.
+    if standard_edits.is_empty() && args.bind.is_empty() && !args.verify_bindings {
+        return Err("setup requires at least one non-empty setup flag".into());
+    }
+
+    // Apply standard setup edits first (only if any are set).
+    if !standard_edits.is_empty() {
+        editable.apply_setup_edits(standard_edits)?;
+    }
+
+    // Process --bind entries: resolve each channel against Discord and write a
+    // repo binding route with a channel_name hint.
+    if !args.bind.is_empty() {
+        let client = DiscordClient::from_config(Arc::new(editable.clone()))?;
+
+        // Collect expected-name overrides (repo -> name).
+        let expect_map: std::collections::HashMap<String, String> = args
+            .expect_name
+            .iter()
+            .filter_map(|pair| {
+                let (repo, name) = pair.split_once('=')?;
+                Some((repo.trim().to_string(), name.trim().to_string()))
+            })
+            .collect();
+
+        for entry in &args.bind {
+            let (repo, channel_id) = entry.split_once('=').ok_or_else(|| {
+                format!("--bind must be REPO=CHANNEL_ID, got '{entry}'")
+            })?;
+            let repo = repo.trim();
+            let channel_id = channel_id.trim();
+
+            let lookup = client.lookup_channel(channel_id).await;
+            match &lookup {
+                binding_verify::ChannelLookup::Found { name, .. } => {
+                    let live_name = name.as_deref().unwrap_or("<unnamed>");
+
+                    // Check expected-name override.
+                    if let Some(expected) = expect_map.get(repo) {
+                        let expected_clean = expected.trim().trim_start_matches('#');
+                        if !live_name.eq_ignore_ascii_case(expected_clean) {
+                            return Err(format!(
+                                "bind {repo}: channel {channel_id} live name is #{live_name} but --expect-name requires #{expected_clean}"
+                            ).into());
+                        }
+                    }
+
+                    println!("bind: {repo} -> {channel_id} (#{live_name})");
+                    editable.apply_repo_binding(repo, channel_id, name.as_deref())?;
+                }
+                binding_verify::ChannelLookup::NotFound => {
+                    return Err(format!(
+                        "bind {repo}: channel {channel_id} not found on Discord"
+                    ).into());
+                }
+                binding_verify::ChannelLookup::Forbidden => {
+                    return Err(format!(
+                        "bind {repo}: bot cannot access channel {channel_id} (403 Forbidden)"
+                    ).into());
+                }
+                binding_verify::ChannelLookup::Unauthorized => {
+                    return Err(
+                        "bind: Discord bot token is invalid (401 Unauthorized)".into()
+                    );
+                }
+                binding_verify::ChannelLookup::NoToken => {
+                    return Err(
+                        "bind: --bind requires a Discord bot token; configure [providers.discord].token first".into()
+                    );
+                }
+                binding_verify::ChannelLookup::Transport(msg) => {
+                    return Err(format!("bind {repo}: {msg}").into());
+                }
+            }
+        }
+    }
+
+    editable.validate()?;
+
+    // Optional full binding audit before saving.
+    if args.verify_bindings {
+        let client = DiscordClient::from_config(Arc::new(editable.clone()))?;
+        let audit = binding_verify::verify(&client, &editable).await;
+        print!("{audit}");
+        if !audit.all_ok() {
+            return Err("setup aborted: binding verification failed (see above)".into());
+        }
+    }
+
+    editable.save(config_path)?;
+    println!("Saved {}", config_path.display());
+    Ok(())
+}
+
+async fn run_verify_bindings(config: Arc<AppConfig>, args: VerifyBindingsArgs) -> Result<()> {
+    let client = DiscordClient::from_config(config.clone())?;
+    let audit = binding_verify::verify(&client, &config).await;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&audit)?);
+    } else {
+        print!("{audit}");
+    }
+
+    if !audit.all_ok() {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn run_explain(config: &AppConfig, args: ExplainArgs) -> Result<()> {

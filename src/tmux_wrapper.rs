@@ -729,14 +729,16 @@ mod tests {
         };
         let config = AppConfig {
             defaults: DefaultsConfig {
-                channel: Some("default".into()),
-                format: crate::events::MessageFormat::Compact,
-            },
+    channel: Some("default".into()),
+    channel_name: None,
+    format: crate::events::MessageFormat::Compact,
+},
             routes: vec![RouteRule {
                 event: "tmux.*".into(),
                 filter: BTreeMap::from([("session".into(), "xeroclaw-*".into())]),
                 sink: "discord".into(),
                 channel: Some("xeroclaw-dev".into()),
+                channel_name: None,
                 webhook: None,
                 slack_webhook: None,
                 mention: None,
@@ -780,9 +782,10 @@ mod tests {
             .to_string();
         let config = AppConfig {
             defaults: DefaultsConfig {
-                channel: Some("default".into()),
-                format: crate::events::MessageFormat::Compact,
-            },
+    channel: Some("default".into()),
+    channel_name: None,
+    format: crate::events::MessageFormat::Compact,
+},
             routes: vec![
                 RouteRule {
                     event: "tmux.*".into(),
@@ -833,14 +836,16 @@ mod tests {
         };
         let config = AppConfig {
             defaults: DefaultsConfig {
-                channel: Some("default".into()),
-                format: crate::events::MessageFormat::Compact,
-            },
+    channel: Some("default".into()),
+    channel_name: None,
+    format: crate::events::MessageFormat::Compact,
+},
             routes: vec![RouteRule {
                 event: "tmux.*".into(),
                 filter: BTreeMap::from([("session".into(), "xeroclaw-*".into())]),
                 sink: "discord".into(),
                 channel: Some("xeroclaw-dev".into()),
+                channel_name: None,
                 webhook: None,
                 slack_webhook: None,
                 mention: None,
