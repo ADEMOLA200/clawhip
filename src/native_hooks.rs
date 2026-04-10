@@ -1087,7 +1087,6 @@ mod tests {
         assert!(script.contains(".clawhip', 'state', 'prompt-submit.json"));
     }
 
-
     #[test]
     fn preserves_nested_tmux_metadata_from_native_payloads() {
         let event = incoming_event_from_native_hook_json(&json!({
