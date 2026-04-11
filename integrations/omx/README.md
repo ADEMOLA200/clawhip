@@ -9,6 +9,5 @@ clawhip native hook --provider codex --file payload.json
 clawhip native hook --provider claude --file payload.json
 ```
 
-Install provider hooks globally, let clawhip derive repo/worktree identity from git context,
-and use `.clawhip/hooks/` only for additive augmentation. Legacy project-scoped hook installs
-should be migrated to the global path.
+Use `.clawhip/hooks/` only for additive augmentation. Routing identity now comes from git
+repo/worktree discovery, not repo-local clawhip metadata files.

@@ -19,7 +19,8 @@ use crate::dispatch::Dispatcher;
 use crate::event::compat::from_incoming_event;
 use crate::events::{IncomingEvent, MessageFormat, normalize_event};
 use crate::native_hooks::{
-    NATIVE_NON_GIT_OUTCOME, NATIVE_NORMALIZATION_OUTCOME_FIELD, incoming_event_from_native_hook_json,
+    NATIVE_NON_GIT_OUTCOME, NATIVE_NORMALIZATION_OUTCOME_FIELD,
+    incoming_event_from_native_hook_json,
 };
 use crate::render::{DefaultRenderer, Renderer};
 use crate::router::Router;

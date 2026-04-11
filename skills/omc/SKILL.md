@@ -2,8 +2,8 @@
 
 This helper directory is no longer the recommended public workflow.
 
-Use provider-native Codex or Claude hooks with the canonical global install, let clawhip
-derive repo/worktree identity from git context, and send local verification payloads through:
+Use provider-native Codex or Claude hooks, rely on git repo/worktree context for routing identity,
+and send local verification payloads through:
 
 ```bash
 clawhip native hook --provider codex --file payload.json

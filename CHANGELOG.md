@@ -47,7 +47,7 @@
 
 - replace provider-specific wrapper/launcher docs with the shared provider-native Codex + Claude hook surface
 - document `clawhip native hook` as the generic ingress for shared hook payload verification
-- move public guidance to provider-native installation, `.clawhip/project.json`, and additive `.clawhip/hooks/` augmentation
+- move public guidance to provider-native installation, git-derived repo/worktree routing identity, and additive `.clawhip/hooks/` augmentation
 
 ### Highlights
 

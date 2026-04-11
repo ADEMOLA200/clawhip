@@ -75,7 +75,8 @@ pub fn incoming_event_from_native_hook_json(
         ],
     );
     let directory = directory.map(|value| canonicalize_or_normalize_path(&value));
-    let explicit_worktree_path = first_string(payload, &["/worktree_path", "/context/worktree_path"]);
+    let explicit_worktree_path =
+        first_string(payload, &["/worktree_path", "/context/worktree_path"]);
     let explicit_repo_path = first_string(payload, &["/repo_path", "/context/repo_path"]);
     let routing_context = resolve_routing_context(
         directory.as_deref(),
@@ -84,14 +85,11 @@ pub fn incoming_event_from_native_hook_json(
     );
     let project_metadata = payload.get("project_metadata").cloned();
 
-    let repo_name = first_string(
-        payload,
-        &[
-            "/repo_name",
-            "/context/repo_name",
-        ],
-    )
-    .or_else(|| routing_context.as_ref().map(|context| context.repo_name.clone()));
+    let repo_name = first_string(payload, &["/repo_name", "/context/repo_name"]).or_else(|| {
+        routing_context
+            .as_ref()
+            .map(|context| context.repo_name.clone())
+    });
     let project_name = first_string(
         payload,
         &[
@@ -1082,7 +1080,16 @@ mod tests {
         }))
         .expect("event");
 
-        assert_eq!(event.payload["repo_name"], json!(dir.path().file_name().unwrap()));
+        assert_eq!(
+            event.payload["repo_name"],
+            json!(
+                dir.path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
         assert!(event.payload.get("project_id").is_none());
         assert!(event.payload.get("project_name").is_none());
         assert!(event.payload.get("project_metadata").is_none());
