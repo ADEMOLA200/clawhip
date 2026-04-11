@@ -61,10 +61,14 @@ cat payload.json | clawhip native hook --provider codex
 
 Recommended installation model:
 
-- install provider-native hooks once at global scope (`~/.codex` / `~/.claude`)
-- keep provider hook config in the provider-owned global config files
-- let clawhip derive `worktree_path`, `repo_path`, and `repo_name` from git context; generated `.clawhip/project.json` is no longer a supported routing input
-- keep `.clawhip/hooks/` only for additive augmentation such as frontmatter or recent context; do not treat repo-local generated hook state/config as install state
+- install provider-native hooks with the canonical global shared-surface installer: `clawhip hooks install`
+- keep provider config in the provider-owned global config files under `~/.codex/` and `~/.claude/`
+- derive routing identity from git repo/worktree context instead of repo-local clawhip metadata
+- use `.clawhip/hooks/` only for additive augmentation such as frontmatter or recent context
+
+Legacy `--scope project` installs are now a warning-only compatibility shim: they redirect to the
+global installer, create no repo-local hook state, and should be migrated by rerunning the global
+install path.
 
 clawhip still pairs well with tmux when you want keyword/stale monitoring, but tmux is now
 optional and no longer the primary hook-registration surface.
@@ -75,15 +79,9 @@ For tmux-backed recovery into an already-running hooked session, use:
 clawhip deliver --session <tmux-session> --prompt "..." --max-enters 4
 ```
 
-`clawhip deliver` validates the canonical global prompt-submit hook setup, confirms the target
-pane is an active repo/worktree-backed Codex/Claude (including OMC/OMX wrapper)
-session, then retries Enter until delivery succeeds or the bounded retry limit is
-reached.
-
-If you previously used `clawhip hooks install --all --scope project`, rerun the hook
-installer with the default global scope. Legacy project-scoped entrypoints are
-migration shims only: they must not be used to create new repo-local hook state, and
-non-git inputs normalize to `non_git` before route evaluation.
+`clawhip deliver` validates the canonical global hook install, confirms the target pane is an
+active repo-backed Codex/Claude (including OMC/OMX wrapper) session, then retries Enter until
+`.clawhip/state/prompt-submit.json` changes or the bounded retry limit is reached.
 
 ## Recipes
 
@@ -593,12 +591,11 @@ Behavior:
 - `deliver` is the prompt recovery path for an already-running hooked tmux-backed provider session
 - `tmux list` shows active daemon-known watches with source, registration timestamp, and parent-process info
 - final delivery still goes through daemon routing
-- `deliver` refuses arbitrary shells and requires the canonical global provider-hook install plus a repo/worktree-backed target pane
+- `deliver` refuses arbitrary shells and requires the global prompt-submit-aware hook setup plus a git repo/worktree-backed target session
 
 Routing note:
 - session names are labels for operators, not routing authority
-- canonicalized `worktree_path` then `repo_path` are the routing authority
-- `repo_name` / `project` remain convenience metadata only and must not break path collisions
+- canonical `worktree_path` / `repo_path` should be the source of truth for routing; `repo_name` is convenience metadata only
 - broad prefix monitors like `clawhip*` are dangerous because they can overlap with launcher-registered watches and create stale/keyword noise
 
 Verification:

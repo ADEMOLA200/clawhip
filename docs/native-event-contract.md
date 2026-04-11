@@ -47,9 +47,9 @@ fields for routing:
 - `event`
 - `session_id`
 - `directory`
+- `repo_path`
 - `worktree_path`
 - `repo_name`
-- `project`
 - `branch`
 - `tool_name`
 - `command`
@@ -58,9 +58,10 @@ fields for routing:
 
 ### Notes
 
-- Canonicalized `worktree_path` then `repo_path` are the authoritative routing identity.
-- `repo_name` / `project` are convenience metadata only; they must not authoritatively disambiguate collisions.
-- Generated `.clawhip/project.json` is no longer a supported routing input.
+- `repo_path` and `worktree_path` are the authoritative routing identity.
+- `repo_name` is convenience metadata only; it must not be the sole collision breaker across repos.
+- Inputs outside a git repo/worktree normalize to an explicit `non_git` outcome and are dropped
+  before route evaluation or delivery.
 - `directory` and `worktree_path` are base context, not optional decorations.
 - Tool-specific metadata is additive; it should not replace core routing fields.
 
@@ -89,6 +90,7 @@ Prefer filters on structured metadata such as:
 - `event`
 - `worktree_path`
 - `repo_path`
+- `repo_name`
 - `branch`
 - `tool_name`
 
@@ -101,7 +103,7 @@ Recommended route shape:
 ```toml
 [[routes]]
 event = "native.*"
-filter = { provider = "codex", worktree_path = "/abs/path/to/clawhip" }
+filter = { provider = "codex", repo_path = "*/clawhip" }
 channel = "1480171113253175356"
 format = "compact"
 ```
@@ -119,11 +121,10 @@ Default clawhip formatting should stay low-noise:
 
 Provider-native global configuration is now the supported setup path.
 
-1. Install Codex/Claude hook forwarding once in the provider-owned global config (`clawhip hooks install` with the default global scope).
-2. clawhip ingests provider payloads through `clawhip native hook`.
-3. clawhip derives `worktree_path`, `repo_path`, and `repo_name` from git context instead of generated repo-local project metadata.
-4. Inputs outside a git repo/worktree normalize to `non_git` and stop before route evaluation/delivery.
-5. `.clawhip/hooks/` remains additive-only enrichment; it is not install state.
-6. If you previously used `clawhip hooks install --scope project`, treat it as a deprecation-only compatibility shim and rerun the global install path.
+1. Codex or Claude owns hook registration through the canonical global shared-surface install
+2. clawhip ingests the provider payload through `clawhip native hook`
+3. clawhip derives routing identity from git repo/worktree context and loads only additive augmenters
+4. clawhip owns channel routing, mentions, formatting, and delivery
 
-That keeps notification policy in one place and avoids duplicated integrations.
+Legacy repo-local generated hook config/state is no longer supported; `clawhip hooks install --scope project`
+now warns and directs users to rerun the global install path without generating repo-local state.
