@@ -959,45 +959,14 @@ mod tests {
         let repo = tempdir.path().join("repo");
         let fake_home = tempdir.path().join("home");
         fs::create_dir_all(&fake_home).expect("create fake home");
-        init_git_repo(&repo);
-        install_global_codex_hooks(&fake_home);
+        git_init_repo(&repo);
         let previous_home = std::env::var_os("HOME");
         unsafe {
             std::env::set_var("HOME", &fake_home);
         }
 
-        let setup = detect_hook_setup(&nested).expect("hook setup");
-        assert_eq!(setup.workdir, repo);
-        assert_eq!(setup.marker_path, repo.join(PROMPT_SUBMIT_MARKER));
-        assert_eq!(setup.supported_providers, vec![ProviderKind::Omx]);
-
-        if let Some(previous) = previous_home {
-            unsafe {
-                std::env::set_var("HOME", previous);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("HOME");
-            }
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn detect_hook_setup_recognizes_global_omc_user_prompt_submit_hooks() {
-        let tempdir = tempdir().expect("tempdir");
-        let fake_home = tempdir.path().join("home");
-        let repo = tempdir.path().join("repo");
-        fs::create_dir_all(&fake_home).expect("create fake home");
-        init_git_repo(&repo);
-        install_global_claude_hooks(&fake_home);
-        let previous_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::set_var("HOME", &fake_home);
-        }
-
-        let setup = detect_hook_setup(&repo).expect("hook setup");
-        assert_eq!(setup.supported_providers, vec![ProviderKind::Omc]);
+        let error = detect_hook_setup(&repo).expect_err("old bridge should be rejected");
+        assert!(error.to_string().contains("global hook setup"));
 
         if let Some(previous) = previous_home {
             unsafe {
@@ -1079,9 +1048,20 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let fake_home = tempdir.path().join("home");
         let workdir = tempdir.path().join("repo");
-        fs::create_dir_all(&fake_home).expect("create fake home");
-        init_git_repo(&workdir);
-        install_global_codex_hooks(&fake_home);
+        git_init_repo(&workdir);
+        let fake_home = tempdir.path().join("home");
+        fs::create_dir_all(fake_home.join(".codex")).expect("create codex dir");
+        fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        fs::write(
+            fake_home.join(".codex/hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider codex"}]}]}}"#,
+        )
+        .expect("write codex hooks");
+        fs::write(
+            fake_home.join(".clawhip/hooks/native-hook.mjs"),
+            "function maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
+        )
+        .expect("write native hook");
 
         let state_dir = tempdir.path().join("fake-tmux-idle");
         fs::create_dir_all(&state_dir).expect("create fake state dir");
@@ -1151,9 +1131,20 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let fake_home = tempdir.path().join("home");
         let workdir = tempdir.path().join("repo");
-        fs::create_dir_all(&fake_home).expect("create fake home");
-        init_git_repo(&workdir);
-        install_global_codex_hooks(&fake_home);
+        git_init_repo(&workdir);
+        let fake_home = tempdir.path().join("home");
+        fs::create_dir_all(fake_home.join(".codex")).expect("create codex dir");
+        fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        fs::write(
+            fake_home.join(".codex/hooks.json"),
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider codex"}]}]}}"#,
+        )
+        .expect("write codex hooks");
+        fs::write(
+            fake_home.join(".clawhip/hooks/native-hook.mjs"),
+            "function maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
+        )
+        .expect("write native hook");
 
         let state_dir = tempdir.path().join("fake-tmux");
         fs::create_dir_all(&state_dir).expect("create fake state dir");

@@ -981,6 +981,9 @@ mod tests {
 
     #[test]
     fn maps_all_shared_hook_events() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("clawhip");
+        git_init_repo(&repo);
         let cases = [
             ("SessionStart", "codex", "session.started"),
             ("PreToolUse", "codex", "tool.pre"),
@@ -996,7 +999,7 @@ mod tests {
         for (event_name, provider, expected_kind) in cases {
             let event = incoming_event_from_native_hook_json(&json!({
                 "provider": provider,
-                "directory": "/repo/clawhip",
+                "directory": repo,
                 "event_name": event_name,
                 "event_payload": {
                     "tool_name": "Bash",
@@ -1074,9 +1077,12 @@ mod tests {
 
     #[test]
     fn augmentation_can_add_context_without_overriding_base_fields() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("clawhip");
+        git_init_repo(&repo);
         let event = incoming_event_from_native_hook_json(&json!({
             "provider": "claude-code",
-            "directory": "/repo/clawhip",
+            "directory": repo,
             "event_name": "SessionStart",
             "augmentation": {
                 "summary": "extra setup context",
@@ -1378,5 +1384,19 @@ mod tests {
         assert!(script.contains("prompt_summary"));
         assert!(script.contains("stop_context"));
         assert!(script.contains("last_prompt_summary"));
+    }
+
+    fn git_init_repo(repo: &Path) {
+        std::fs::create_dir_all(repo).expect("create repo");
+        let output = Command::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
