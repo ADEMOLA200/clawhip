@@ -1,7 +1,7 @@
 use std::fs;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -273,6 +273,7 @@ fn deliver_uses_global_hook_install_for_repo_sessions() {
     init_git_repo(&repo);
     fake_global_codex_install(&home);
     fs::create_dir_all(&state_dir).expect("create state dir");
+    write_file(&state_dir.join("capture.txt"), "codex$ \n");
     write_fake_tmux(&tmux_path, &state_dir, &repo, &marker_path);
 
     let output = run_command(
@@ -306,6 +307,7 @@ fn deliver_rejects_non_repo_sessions_even_with_global_hook_install() {
     fs::create_dir_all(&non_repo).expect("create non-repo");
     fake_global_codex_install(&home);
     fs::create_dir_all(&state_dir).expect("create state dir");
+    write_file(&state_dir.join("capture.txt"), "codex$ \n");
     write_fake_tmux(&tmux_path, &state_dir, &non_repo, &marker_path);
 
     let output = run_command(
