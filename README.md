@@ -788,6 +788,7 @@ Expected install path:
 Use:
 - `docs/live-verification.md`
 - `scripts/live-verify-default-presets.sh`
+- `scripts/internal-pr-format-gate.sh` for cheap local format gating before internal PR create/update flows
 
 Required live sign-off presets:
 - issue opened
@@ -818,3 +819,19 @@ clawhip native hook ... # provider-native hook thin client
 clawhip tmux ...        # thin client / wrapper surface
 clawhip plugin list     # list installed/bundled shell-hook plugins
 ```
+
+## Internal PR fast-path
+
+Before opening or updating an internal PR from a Rust worktree, run:
+
+```bash
+scripts/internal-pr-format-gate.sh
+```
+
+If you already know the tree just needs formatting, auto-fix first:
+
+```bash
+scripts/internal-pr-format-gate.sh --fix
+```
+
+This catches the cheapest class of red CI (`cargo fmt` only) locally before PR create/update churn.
