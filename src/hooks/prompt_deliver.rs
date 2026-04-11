@@ -121,9 +121,9 @@ pub async fn run(args: DeliverArgs) -> Result<()> {
 }
 
 pub async fn deliver(config: &PromptDeliverConfig) -> Result<DeliveryResult> {
-    let pane = resolve_target_pane(&config.session).await?;
+    let mut pane = resolve_target_pane(&config.session).await?;
     let hook_setup = detect_hook_setup(&pane.cwd)?;
-    let provider = detect_active_provider(&pane, &hook_setup).await?;
+    let provider = ensure_provider_ready(&mut pane, &hook_setup, config).await?;
 
     wait_for_tui_ready(&pane.pane_id, config.tui_timeout, config.poll_interval).await?;
 
@@ -361,6 +361,124 @@ async fn detect_active_provider(pane: &PaneTarget, hook_setup: &HookSetup) -> Re
         pane.pane_pid,
     )
     .into())
+}
+
+async fn ensure_provider_ready(
+    pane: &mut PaneTarget,
+    hook_setup: &HookSetup,
+    config: &PromptDeliverConfig,
+) -> Result<ProviderKind> {
+    if let Ok(provider) = detect_active_provider(pane, hook_setup).await {
+        return Ok(provider);
+    }
+
+    let provider = infer_provider_from_hook_setup(hook_setup)?;
+    try_resume_provider(pane, provider, config).await?;
+    *pane = resolve_target_pane(&pane.session).await?;
+    detect_active_provider(pane, hook_setup).await
+}
+
+fn infer_provider_from_hook_setup(hook_setup: &HookSetup) -> Result<ProviderKind> {
+    if hook_setup.supported_providers.len() == 1 {
+        Ok(hook_setup.supported_providers[0])
+    } else {
+        Err("refusing delivery: multiple providers configured for this workdir; cannot infer which one to resume safely".into())
+    }
+}
+
+async fn try_resume_provider(
+    pane: &PaneTarget,
+    provider: ProviderKind,
+    config: &PromptDeliverConfig,
+) -> Result<()> {
+    let resume = build_resume_command(pane, provider).await?;
+    send_literal_keys(&pane.pane_id, &resume).await?;
+    send_key(&pane.pane_id, "Enter").await?;
+    wait_for_provider_prompt(
+        &pane.pane_id,
+        provider,
+        config.tui_timeout,
+        config.poll_interval,
+    )
+    .await
+}
+
+async fn build_resume_command(pane: &PaneTarget, provider: ProviderKind) -> Result<String> {
+    let process_tree = read_process_tree(pane.pane_pid).await.unwrap_or_default();
+    if let Some(resume) = process_tree
+        .iter()
+        .find_map(|process| extract_resume_command(process, provider))
+    {
+        return Ok(resume);
+    }
+
+    let binary = match provider {
+        ProviderKind::Omc => "omc",
+        ProviderKind::Omx => "omx",
+    };
+    Ok(binary.into())
+}
+
+fn extract_resume_command(process: &ProcessInfo, provider: ProviderKind) -> Option<String> {
+    let args = process.args.trim();
+    if args.is_empty() || !provider_matches_command(provider, &process.args.to_ascii_lowercase()) {
+        return None;
+    }
+
+    if let Some(idx) = args.find(" resume ") {
+        return Some(args[idx + 1..].trim().to_string());
+    }
+    if args.starts_with("resume ") {
+        return Some(args.to_string());
+    }
+    None
+}
+
+async fn wait_for_provider_prompt(
+    target: &str,
+    provider: ProviderKind,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+
+        if pane_looks_like_provider(target, provider).await {
+            return Ok(());
+        }
+
+        sleep(poll_interval).await;
+    }
+}
+
+async fn pane_looks_like_provider(target: &str, provider: ProviderKind) -> bool {
+    let output = Command::new(tmux_bin())
+        .arg("capture-pane")
+        .arg("-p")
+        .arg("-t")
+        .arg(target)
+        .arg("-S")
+        .arg("-40")
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    match provider {
+        ProviderKind::Omc => text.contains("claude") || text.contains("omc"),
+        ProviderKind::Omx => {
+            text.contains("openai codex") || text.contains("gpt-5.4") || text.contains("omx")
+        }
+    }
 }
 
 fn provider_matches_command(provider: ProviderKind, command: &str) -> bool {
@@ -682,6 +800,41 @@ mod tests {
             &processes,
             ProviderKind::Omx
         ));
+    }
+
+    #[test]
+    fn extract_resume_command_prefers_resume_tail_for_omx() {
+        let process = ProcessInfo {
+            pid: 42,
+            ppid: 1,
+            command: "codex".into(),
+            args: "codex resume 019d7ac0-c822-7ab0-9edf-d76ec22288da".into(),
+        };
+
+        assert_eq!(
+            extract_resume_command(&process, ProviderKind::Omx).as_deref(),
+            Some("resume 019d7ac0-c822-7ab0-9edf-d76ec22288da")
+        );
+    }
+
+    #[test]
+    fn infer_provider_from_hook_setup_requires_single_provider() {
+        let setup = HookSetup {
+            workdir: PathBuf::from("/tmp/repo"),
+            marker_path: PathBuf::from("/tmp/repo/.clawhip/state/prompt-submit.json"),
+            supported_providers: vec![ProviderKind::Omx],
+            sources: vec![".codex/hooks.json + .clawhip/hooks/native-hook.mjs"],
+        };
+        assert_eq!(
+            infer_provider_from_hook_setup(&setup).unwrap(),
+            ProviderKind::Omx
+        );
+
+        let dual = HookSetup {
+            supported_providers: vec![ProviderKind::Omc, ProviderKind::Omx],
+            ..setup
+        };
+        assert!(infer_provider_from_hook_setup(&dual).is_err());
     }
 
     #[tokio::test]
