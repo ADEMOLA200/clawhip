@@ -1,6 +1,8 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(test)]
+use std::fs;
 
 use serde_json::{Map, Value, json};
 
@@ -1057,8 +1059,9 @@ mod tests {
     }
 
     #[test]
-    fn loads_project_metadata_from_project_json() {
+    fn repo_local_project_metadata_is_not_loaded_for_native_routing() {
         let dir = tempdir().expect("tempdir");
+        init_git_repo(dir.path());
         fs::create_dir_all(dir.path().join(".clawhip")).unwrap();
         fs::write(
             dir.path().join(CLAWHIP_PROJECT_FILE),
@@ -1079,12 +1082,30 @@ mod tests {
         }))
         .expect("event");
 
-        assert_eq!(event.payload["project_id"], json!("clawhip-core"));
-        assert_eq!(event.payload["project_name"], json!("clawhip"));
+        assert_eq!(event.payload["repo_name"], json!(dir.path().file_name().unwrap()));
+        assert!(event.payload.get("project_id").is_none());
+        assert!(event.payload.get("project_name").is_none());
+        assert!(event.payload.get("project_metadata").is_none());
+    }
+
+    #[test]
+    fn non_git_directory_normalizes_to_explicit_drop_outcome() {
+        let dir = tempdir().expect("tempdir");
+        let event = incoming_event_from_native_hook_json(&json!({
+            "provider": "codex",
+            "directory": dir.path(),
+            "event_name": "SessionStart",
+            "event_payload": {}
+        }))
+        .expect("event");
+
         assert_eq!(
-            event.payload["project_metadata"]["repo_name"],
-            json!("clawhip")
+            event.payload[NATIVE_NORMALIZATION_OUTCOME_FIELD],
+            json!(NATIVE_NON_GIT_OUTCOME)
         );
+        assert_eq!(event.payload["routeable"], json!(false));
+        assert!(event.payload.get("repo_path").is_none());
+        assert!(event.payload.get("worktree_path").is_none());
     }
 
     #[test]
@@ -1253,11 +1274,10 @@ mod tests {
     fn generated_hook_script_mentions_worktree_repo_root_fallback() {
         let script = generated_hook_script();
         assert!(script.contains("function inferRepoRoot(cwd)"));
+        assert!(script.contains("function inferWorktreeRoot(cwd)"));
         assert!(script.contains("--git-common-dir"));
-        assert!(
-            script
-                .contains("loadProjectMetadata(repoRoot) || loadProjectMetadata(input.cwd || cwd)")
-        );
+        assert!(script.contains("payload.normalization_outcome = 'non_git'"));
+        assert!(script.contains("const worktreeRoot = inferWorktreeRoot(input.cwd || cwd);"));
     }
 
     #[test]
@@ -1265,22 +1285,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(&repo).expect("create repo dir");
-
-        fn git(dir: &std::path::Path, args: &[&str]) {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .expect("git");
-            assert!(
-                out.status.success(),
-                "git {:?}: {}",
-                args,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-
-        git(&repo, &["init"]);
+        init_git_repo(&repo);
         std::fs::write(repo.join("README.md"), "init\n").expect("write");
         git(&repo, &["add", "README.md"]);
         git(
@@ -1309,6 +1314,24 @@ mod tests {
             result,
             Some(expected),
             "infer_repo_root should return the main repo, not the worktree"
+        );
+    }
+
+    fn init_git_repo(dir: &std::path::Path) {
+        git(dir, &["init"]);
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 

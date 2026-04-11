@@ -734,6 +734,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_native_hook_accepts_but_drops_non_git_payloads_before_enqueue() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let state = AppState {
+            config: Arc::new(AppConfig::default()),
+            port: 25294,
+            tx,
+            tmux_registry: Arc::new(RwLock::new(HashMap::new())),
+            pending_update: update::new_shared_pending_update(),
+        };
+        let dir = tempdir().expect("tempdir");
+        let payload = json!({
+            "provider": "codex",
+            "event_name": "SessionStart",
+            "directory": dir.path(),
+            "event_payload": {}
+        });
+
+        let response = post_native_hook(State(state), Json(payload))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let response_json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response_json["ok"], json!(true));
+        assert_eq!(response_json["dropped"], json!(true));
+        assert_eq!(response_json["reason"], json!(NATIVE_NON_GIT_OUTCOME));
+        assert!(rx.try_recv().is_err(), "non-git payload should not enqueue");
+    }
+
+    #[tokio::test]
     async fn list_tmux_returns_registered_sessions_with_metadata() {
         let (tx, _rx) = mpsc::channel(1);
         let registry: SharedTmuxRegistry = Arc::new(RwLock::new(HashMap::new()));
