@@ -95,6 +95,7 @@ struct HookSetup {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookDetectionScope {
+    Project,
     Global,
 }
 
@@ -134,12 +135,14 @@ pub async fn deliver(config: &PromptDeliverConfig) -> Result<DeliveryResult> {
     let mut pane = resolve_target_pane(&config.session).await?;
     let hook_setup = detect_hook_setup(&pane.cwd)?;
     let provider = ensure_provider_ready(&mut pane, &hook_setup, config).await?;
+    let marker_path = effective_marker_path(&hook_setup, &pane.cwd);
+    let effective_workdir = effective_workdir(&hook_setup, &pane.cwd);
 
     wait_for_tui_ready(&pane.pane_id, config.tui_timeout, config.poll_interval).await?;
 
-    let baseline_marker = read_marker_hash(&hook_setup.marker_path)?;
+    let baseline_marker = read_marker_hash(&marker_path)?;
     if hook_setup.install_scope == HookDetectionScope::Global {
-        ensure_global_workdir_marker(&hook_setup)?;
+        ensure_global_workdir_marker(&marker_path)?;
     }
     send_literal_keys(&pane.pane_id, &config.prompt).await?;
     let baseline_pane = capture_pane_hash(&pane.pane_id).await.ok();
@@ -148,7 +151,7 @@ pub async fn deliver(config: &PromptDeliverConfig) -> Result<DeliveryResult> {
         send_key(&pane.pane_id, "Enter").await?;
         sleep(config.verify_delay).await;
 
-        if marker_changed(&hook_setup.marker_path, baseline_marker)? {
+        if marker_changed(&marker_path, baseline_marker)? {
             wait_for_progress_signal(
                 &pane.pane_id,
                 baseline_pane,
@@ -161,7 +164,7 @@ pub async fn deliver(config: &PromptDeliverConfig) -> Result<DeliveryResult> {
                 enter_attempts: attempt,
                 provider,
                 pane_id: pane.pane_id,
-                workdir: hook_setup.workdir,
+                workdir: effective_workdir,
             });
         }
     }
@@ -173,7 +176,7 @@ pub async fn deliver(config: &PromptDeliverConfig) -> Result<DeliveryResult> {
         config.max_enters.max(1),
         provider.label(),
         PROMPT_SUBMIT_MARKER,
-        hook_setup.marker_path.display(),
+        marker_path.display(),
         pane.current_command,
         hook_setup.sources.join(", "),
         format_last_line(&last_line),
@@ -230,27 +233,20 @@ async fn resolve_target_pane(session: &str) -> Result<PaneTarget> {
 }
 
 fn detect_hook_setup(cwd: &Path) -> Result<HookSetup> {
-    let repo_root = infer_repo_root(cwd).ok_or_else(|| {
-        format!(
-            "refusing delivery: '{}' is not inside a repo/workdir with git-derived routing metadata; prompt delivery requires a repo/workdir-backed session and a global hook install",
-            cwd.display()
-        )
-    })?;
+    for directory in cwd.ancestors() {
+        if let Some(setup) = hook_setup_at(directory, HookDetectionScope::Project) {
+            return Ok(setup);
+        }
+    }
 
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && let Some(setup) = hook_setup_at(&home, HookDetectionScope::Global)
     {
-        return Ok(HookSetup {
-            workdir: repo_root.clone(),
-            marker_path: repo_root.join(PROMPT_SUBMIT_MARKER),
-            supported_providers: setup.supported_providers,
-            sources: setup.sources,
-            install_scope: HookDetectionScope::Global,
-        });
+        return Ok(setup);
     }
 
     Err(format!(
-        "refusing delivery: '{}' is not inside a repo/workdir with prompt-submit-aware global hook setup; no global ~/.codex / ~/.claude clawhip hook install was detected",
+        "refusing delivery: '{}' is not inside a repo/workdir with prompt-submit-aware hook setup, and no global ~/.codex / ~/.claude clawhip hook install was detected",
         cwd.display()
     )
     .into())
@@ -259,16 +255,35 @@ fn detect_hook_setup(cwd: &Path) -> Result<HookSetup> {
 fn hook_setup_at(root: &Path, install_scope: HookDetectionScope) -> Option<HookSetup> {
     let mut providers = Vec::new();
     let mut sources = Vec::new();
-    let has_native_script = has_native_prompt_submit_hook_script(root);
+    let has_local_native_script = has_native_prompt_submit_hook_script(root);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let has_global_native_script = home
+        .as_deref()
+        .is_some_and(has_native_prompt_submit_hook_script);
 
-    if has_claude_prompt_submit_hook(root) && has_native_script {
+    if install_scope == HookDetectionScope::Global
+        && has_claude_prompt_submit_hook(root)
+        && has_global_native_script
+    {
         providers.push(ProviderKind::Omc);
-        sources.push(".claude/settings.json + .clawhip/hooks/native-hook.mjs");
+        sources.push("~/.claude/settings.json + ~/.clawhip/hooks/native-hook.mjs");
     }
-    if has_codex_prompt_submit_hook(root) && has_native_script {
+    if has_codex_prompt_submit_hook(root) && (has_local_native_script || has_global_native_script) {
         providers.push(ProviderKind::Omx);
-        sources.push(".codex/hooks.json + .clawhip/hooks/native-hook.mjs");
+        sources.push(if install_scope == HookDetectionScope::Global {
+            "~/.codex/hooks.json or ~/.codex/config.toml + ~/.clawhip/hooks/native-hook.mjs"
+        } else {
+            ".codex/hooks.json + ~/.clawhip/hooks/native-hook.mjs"
+        });
     }
+    if install_scope == HookDetectionScope::Project
+        && has_omx_prompt_submit_hook(root)
+        && !providers.contains(&ProviderKind::Omx)
+    {
+        providers.push(ProviderKind::Omx);
+        sources.push(".omx/hooks/clawhip.mjs");
+    }
+
     if providers.is_empty() {
         return None;
     }
@@ -351,28 +366,19 @@ fn has_native_prompt_submit_hook_script(root: &Path) -> bool {
     content.contains("prompt-submit.json") || content.contains("maybeWritePromptSubmitState")
 }
 
+fn has_omx_prompt_submit_hook(root: &Path) -> bool {
+    let path = root.join(".omx/hooks/clawhip.mjs");
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    content.contains("prompt-submit.json") || content.contains("prompt_submit_recorded")
+}
+
 fn command_mentions_clawhip(command: &str) -> bool {
     let normalized = command.trim().to_ascii_lowercase();
     normalized.contains("clawhip native hook")
         || normalized.contains(".clawhip/hooks/native-hook.mjs")
         || normalized.contains("native-hook.mjs")
-}
-
-fn infer_git_workdir(cwd: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let root = String::from_utf8(output.stdout).ok()?;
-    let trimmed = root.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(trimmed);
-    Some(path.canonicalize().unwrap_or(path))
 }
 
 async fn detect_active_provider(pane: &PaneTarget, hook_setup: &HookSetup) -> Result<ProviderKind> {
@@ -629,60 +635,48 @@ fn read_marker_hash(path: &Path) -> Result<Option<u64>> {
     Ok(Some(content_hash(&fs::read_to_string(path)?)))
 }
 
-fn ensure_global_workdir_marker(hook_setup: &HookSetup) -> Result<()> {
-    if hook_setup.install_scope != HookDetectionScope::Global {
-        return Ok(());
-    }
-    if let Some(parent) = hook_setup.marker_path.parent() {
+fn ensure_global_workdir_marker(marker_path: &Path) -> Result<()> {
+    if let Some(parent) = marker_path.parent() {
         fs::create_dir_all(parent)?;
     }
     Ok(())
 }
 
-fn infer_repo_root(cwd: &Path) -> Option<PathBuf> {
-    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let cwd_str = cwd.to_string_lossy().into_owned();
-
-    if let Some(common_dir) = std::process::Command::new("git")
-        .args([
-            "-C",
-            &cwd_str,
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| output.trim().to_string())
-        .filter(|output| !output.is_empty())
-        && let Some(repo_root) = Path::new(&common_dir).parent()
-    {
-        return Some(
-            repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| repo_root.to_path_buf()),
-        );
+fn effective_workdir(hook_setup: &HookSetup, pane_cwd: &Path) -> PathBuf {
+    if hook_setup.install_scope != HookDetectionScope::Global {
+        return hook_setup.workdir.clone();
     }
 
+    infer_worktree_root(pane_cwd).unwrap_or_else(|| pane_cwd.to_path_buf())
+}
+
+fn effective_marker_path(hook_setup: &HookSetup, pane_cwd: &Path) -> PathBuf {
+    effective_workdir(hook_setup, pane_cwd).join(PROMPT_SUBMIT_MARKER)
+}
+
+fn infer_worktree_root(directory: &Path) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
-        .args(["-C", &cwd_str, "rev-parse", "--show-toplevel"])
+        .args([
+            "-C",
+            &directory.display().to_string(),
+            "rev-parse",
+            "--show-toplevel",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
 
-    let repo_root = String::from_utf8(output.stdout).ok()?;
-    let repo_root = repo_root.trim();
-    if repo_root.is_empty() {
+    let root = String::from_utf8(output.stdout).ok()?;
+    let trimmed = root.trim();
+    if trimmed.is_empty() {
         None
     } else {
         Some(
-            PathBuf::from(repo_root)
+            PathBuf::from(trimmed)
                 .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(repo_root)),
+                .unwrap_or_else(|_| PathBuf::from(trimmed)),
         )
     }
 }
@@ -871,33 +865,106 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn detect_hook_setup_uses_global_hooks_for_repo_workdir() {
+    fn detect_hook_setup_walks_to_parent_workdir() {
         let tempdir = tempdir().expect("tempdir");
         let repo = tempdir.path().join("repo");
-        let home = tempdir.path().join("home");
         let nested = repo.join("src/bin");
+        let hook_dir = repo.join(".omx/hooks");
+        fs::create_dir_all(&hook_dir).expect("create hook dir");
         fs::create_dir_all(&nested).expect("create nested dir");
-        let previous_home = std::env::var_os("HOME");
-        git_init_repo(&repo);
-        fs::create_dir_all(home.join(".codex")).expect("create codex dir");
-        fs::create_dir_all(home.join(".clawhip/hooks")).expect("create hook dir");
         fs::write(
-            home.join(".codex/hooks.json"),
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider codex"}]}]}}"#,
+            hook_dir.join("clawhip.mjs"),
+            "export async function onHookEvent(event, sdk) { return { promptSubmitState: '.clawhip/state/prompt-submit.json' }; }\nfunction maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
+        )
+        .expect("write omx hook");
+
+        let setup = detect_hook_setup(&nested).expect("hook setup");
+        assert_eq!(setup.workdir, repo);
+        assert_eq!(setup.supported_providers, vec![ProviderKind::Omx]);
+    }
+
+    #[test]
+    #[serial]
+    fn detect_hook_setup_recognizes_project_codex_hooks_with_global_bridge() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo = tempdir.path().join("repo");
+        let nested = repo.join("src/bin");
+        let fake_home = tempdir.path().join("home");
+        fs::create_dir_all(repo.join(".codex")).expect("create codex dir");
+        fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let command = format!(
+            "node {} --provider codex",
+            shell_escape_path(&fake_home.join(".clawhip/hooks/native-hook.mjs"))
+        );
+        fs::write(
+            repo.join(".codex/hooks.json"),
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+            ),
         )
         .expect("write codex hooks");
         fs::write(
-            home.join(".clawhip/hooks/native-hook.mjs"),
+            fake_home.join(".clawhip/hooks/native-hook.mjs"),
             "function maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
         )
         .expect("write native hook");
+
+        let previous_home = std::env::var_os("HOME");
         unsafe {
-            std::env::set_var("HOME", &home);
+            std::env::set_var("HOME", &fake_home);
         }
 
         let setup = detect_hook_setup(&nested).expect("hook setup");
-        assert_eq!(setup.workdir, repo.canonicalize().expect("canonical repo"));
+        assert_eq!(setup.workdir, repo);
+        assert_eq!(setup.supported_providers, vec![ProviderKind::Omx]);
+        assert_eq!(setup.install_scope, HookDetectionScope::Project);
+
+        if let Some(previous) = previous_home {
+            unsafe {
+                std::env::set_var("HOME", previous);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn detect_hook_setup_uses_global_codex_install() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo = tempdir.path().join("repo");
+        let nested = repo.join("src/bin");
+        let fake_home = tempdir.path().join("home");
+        fs::create_dir_all(fake_home.join(".codex")).expect("create codex dir");
+        fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let command = format!(
+            "node {} --provider codex",
+            shell_escape_path(&fake_home.join(".clawhip/hooks/native-hook.mjs"))
+        );
+        fs::write(
+            fake_home.join(".codex/hooks.json"),
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+            ),
+        )
+        .expect("write codex hooks");
+        fs::write(
+            fake_home.join(".clawhip/hooks/native-hook.mjs"),
+            "function maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
+        )
+        .expect("write native hook");
+
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", &fake_home);
+        }
+
+        let setup = detect_hook_setup(&nested).expect("hook setup");
+        assert_eq!(setup.workdir, fake_home);
         assert_eq!(setup.supported_providers, vec![ProviderKind::Omx]);
         assert_eq!(setup.install_scope, HookDetectionScope::Global);
 
@@ -914,29 +981,37 @@ mod tests {
 
     #[test]
     #[serial]
-    fn detect_hook_setup_recognizes_global_omc_user_prompt_submit_hooks() {
+    fn detect_hook_setup_uses_global_claude_install() {
         let tempdir = tempdir().expect("tempdir");
-        let repo = tempdir.path().join("repo");
-        let home = tempdir.path().join("home");
-        let previous_home = std::env::var_os("HOME");
-        git_init_repo(&repo);
-        fs::create_dir_all(home.join(".claude")).expect("create claude dir");
-        fs::create_dir_all(home.join(".clawhip/hooks")).expect("create hook dir");
+        let repo = tempdir.path().join("repo/src");
+        let fake_home = tempdir.path().join("home");
+        fs::create_dir_all(fake_home.join(".claude")).expect("create claude dir");
+        fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        fs::create_dir_all(&repo).expect("create repo dir");
+        let command = format!(
+            "node {} --provider claude-code",
+            shell_escape_path(&fake_home.join(".clawhip/hooks/native-hook.mjs"))
+        );
         fs::write(
-            home.join(".claude/settings.json"),
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider claude-code"}]}]}}"#,
+            fake_home.join(".claude/settings.json"),
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+            ),
         )
         .expect("write settings");
         fs::write(
-            home.join(".clawhip/hooks/native-hook.mjs"),
+            fake_home.join(".clawhip/hooks/native-hook.mjs"),
             "function maybeWritePromptSubmitState() { return '.clawhip/state/prompt-submit.json'; }\n",
         )
         .expect("write native hook");
+
+        let previous_home = std::env::var_os("HOME");
         unsafe {
-            std::env::set_var("HOME", &home);
+            std::env::set_var("HOME", &fake_home);
         }
 
         let setup = detect_hook_setup(&repo).expect("hook setup");
+        assert_eq!(setup.workdir, fake_home);
         assert_eq!(setup.supported_providers, vec![ProviderKind::Omc]);
         assert_eq!(setup.install_scope, HookDetectionScope::Global);
 
@@ -958,14 +1033,20 @@ mod tests {
         let repo = tempdir.path().join("repo");
         let fake_home = tempdir.path().join("home");
         fs::create_dir_all(&fake_home).expect("create fake home");
-        git_init_repo(&repo);
         let previous_home = std::env::var_os("HOME");
         unsafe {
             std::env::set_var("HOME", &fake_home);
         }
+        let hook_dir = repo.join(".omx/hooks");
+        fs::create_dir_all(&hook_dir).expect("create hook dir");
+        fs::write(
+            hook_dir.join("clawhip.mjs"),
+            "import { createClawhipOmxClient } from './clawhip-sdk.mjs';\nexport async function onHookEvent(event, sdk) { return { ok: true }; }\n",
+        )
+        .expect("write old hook");
 
         let error = detect_hook_setup(&repo).expect_err("old bridge should be rejected");
-        assert!(error.to_string().contains("global hook setup"));
+        assert!(error.to_string().contains("prompt-submit-aware hook setup"));
 
         if let Some(previous) = previous_home {
             unsafe {
@@ -1026,7 +1107,9 @@ mod tests {
             workdir: PathBuf::from("/tmp/repo"),
             marker_path: PathBuf::from("/tmp/repo/.clawhip/state/prompt-submit.json"),
             supported_providers: vec![ProviderKind::Omx],
-            sources: vec![".codex/hooks.json + .clawhip/hooks/native-hook.mjs"],
+            sources: vec![
+                "~/.codex/hooks.json or ~/.codex/config.toml + ~/.clawhip/hooks/native-hook.mjs",
+            ],
             install_scope: HookDetectionScope::Global,
         };
         assert_eq!(
@@ -1046,13 +1129,18 @@ mod tests {
     async fn deliver_fails_when_prompt_submit_records_but_pane_shows_no_progress() {
         let tempdir = tempdir().expect("tempdir");
         let workdir = tempdir.path().join("repo");
-        git_init_repo(&workdir);
         let fake_home = tempdir.path().join("home");
         fs::create_dir_all(fake_home.join(".codex")).expect("create codex dir");
         fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        let command = format!(
+            "node {} --provider codex",
+            shell_escape_path(&fake_home.join(".clawhip/hooks/native-hook.mjs"))
+        );
         fs::write(
             fake_home.join(".codex/hooks.json"),
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider codex"}]}]}}"#,
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+            ),
         )
         .expect("write codex hooks");
         fs::write(
@@ -1128,13 +1216,18 @@ mod tests {
     async fn deliver_retries_enter_until_prompt_submit_marker_changes() {
         let tempdir = tempdir().expect("tempdir");
         let workdir = tempdir.path().join("repo");
-        git_init_repo(&workdir);
         let fake_home = tempdir.path().join("home");
         fs::create_dir_all(fake_home.join(".codex")).expect("create codex dir");
         fs::create_dir_all(fake_home.join(".clawhip/hooks")).expect("create hook dir");
+        let command = format!(
+            "node {} --provider codex",
+            shell_escape_path(&fake_home.join(".clawhip/hooks/native-hook.mjs"))
+        );
         fs::write(
             fake_home.join(".codex/hooks.json"),
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node ~/.clawhip/hooks/native-hook.mjs --provider codex"}]}]}}"#,
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+            ),
         )
         .expect("write codex hooks");
         fs::write(
@@ -1209,19 +1302,5 @@ mod tests {
     fn shell_escape_path(path: &Path) -> String {
         let value = path.display().to_string();
         format!("'{}'", value.replace('\'', "'\\''"))
-    }
-
-    fn git_init_repo(repo: &Path) {
-        fs::create_dir_all(repo).expect("create repo");
-        let output = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(repo)
-            .output()
-            .expect("git init");
-        assert!(
-            output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }

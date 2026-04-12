@@ -16,21 +16,14 @@ use crate::native_hooks::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallReport {
     pub generated_files: Vec<PathBuf>,
-    pub warnings: Vec<String>,
 }
 
 pub fn install(args: HooksInstallArgs) -> Result<()> {
     let report = run_install(&args)?;
 
-    if args.scope == HookInstallScope::Project {
-        println!("Project scope is deprecated; installing to the canonical global hook location.");
-    }
     println!("Installed provider-native hook forwarding:");
     for path in &report.generated_files {
         println!("  {}", path.display());
-    }
-    for warning in &report.warnings {
-        eprintln!("warning: {warning}");
     }
     println!("Supported shared events: {}", SHARED_HOOK_EVENTS.join(", "));
     println!("Ingress: clawhip native hook --provider <codex|claude-code>");
@@ -39,34 +32,56 @@ pub fn install(args: HooksInstallArgs) -> Result<()> {
 }
 
 fn run_install(args: &HooksInstallArgs) -> Result<InstallReport> {
+    ensure_supported_install_scope(args)?;
     let root = resolve_install_root(args)?;
+    let global_hook_script_path = home_dir()?.join(HOOK_SCRIPT);
     let providers = selected_providers(args);
     let mut generated_files = Vec::new();
-    let warnings = Vec::new();
 
-    let hook_script_path = root.join(HOOK_SCRIPT);
-    write_generated_file(&hook_script_path, generated_hook_script(), args.force)?;
-    generated_files.push(hook_script_path.clone());
+    write_generated_file(
+        &global_hook_script_path,
+        generated_hook_script(),
+        args.force,
+    )?;
+    generated_files.push(global_hook_script_path.clone());
 
     for provider in providers {
         let path = match provider {
-            HookProvider::Codex => write_codex_hooks(&root, &hook_script_path)?,
-            HookProvider::ClaudeCode => write_claude_settings(&root, &hook_script_path)?,
+            HookProvider::Codex => write_codex_hooks(&root, &global_hook_script_path)?,
+            HookProvider::ClaudeCode => write_claude_settings(&root, &global_hook_script_path)?,
         };
         generated_files.push(path);
     }
 
-    Ok(InstallReport {
-        generated_files,
-        warnings,
-    })
+    Ok(InstallReport { generated_files })
+}
+
+fn ensure_supported_install_scope(args: &HooksInstallArgs) -> Result<()> {
+    if args.scope != HookInstallScope::Project {
+        return Ok(());
+    }
+
+    let includes_claude =
+        args.all || args.provider.is_empty() || args.provider.contains(&HookProvider::ClaudeCode);
+    if !includes_claude {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "Claude Code provider-native hook forwarding is global-only; Codex may use either ~/.codex/hooks.json or <repo>/.codex/hooks.json with the clawhip bridge in ~/.clawhip"
+    )
+    .into())
 }
 
 fn resolve_install_root(args: &HooksInstallArgs) -> Result<PathBuf> {
-    if args.scope == HookInstallScope::Project {
-        let _ = args.root.as_ref();
+    match args.scope {
+        HookInstallScope::Project => Ok(args
+            .root
+            .clone()
+            .unwrap_or(std::env::current_dir()?)
+            .canonicalize()?),
+        HookInstallScope::Global => home_dir(),
     }
-    home_dir()
 }
 
 fn selected_providers(args: &HooksInstallArgs) -> Vec<HookProvider> {
@@ -272,36 +287,112 @@ mod tests {
 
     #[test]
     #[serial]
-    fn install_project_scope_writes_global_provider_files_without_project_state() {
+    fn install_project_scope_writes_codex_hook_file_and_global_bridge() {
         let dir = tempdir().expect("tempdir");
-        let home = dir.path().join("home");
-        let repo = dir.path().join("repo");
-        fs::create_dir_all(&repo).expect("create repo");
         let previous_home = std::env::var_os("HOME");
         unsafe {
-            std::env::set_var("HOME", &home);
+            std::env::set_var("HOME", dir.path());
         }
+
         let report = run_install(&HooksInstallArgs {
+            all: false,
+            provider: vec![HookProvider::Codex],
+            scope: HookInstallScope::Project,
+            root: Some(dir.path().to_path_buf()),
+            force: false,
+        })
+        .expect("project-scoped codex install should succeed");
+
+        assert!(
+            report
+                .generated_files
+                .contains(&dir.path().join(HOOK_SCRIPT))
+        );
+        assert!(
+            report
+                .generated_files
+                .contains(&dir.path().join(CODEX_HOOKS_FILE))
+        );
+        assert!(
+            report
+                .generated_files
+                .contains(&dir.path().join(CODEX_HOOKS_FILE))
+        );
+
+        if let Some(previous) = previous_home {
+            unsafe {
+                std::env::set_var("HOME", previous);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    #[test]
+    fn install_project_scope_rejects_claude() {
+        let dir = tempdir().expect("tempdir");
+        let error = run_install(&HooksInstallArgs {
+            all: false,
+            provider: vec![HookProvider::ClaudeCode],
+            scope: HookInstallScope::Project,
+            root: Some(dir.path().to_path_buf()),
+            force: false,
+        })
+        .expect_err("project-scoped claude install should be rejected");
+
+        assert!(error.to_string().contains("Claude Code"));
+    }
+
+    #[test]
+    fn install_project_scope_rejects_all_when_claude_is_implied() {
+        let dir = tempdir().expect("tempdir");
+        let error = run_install(&HooksInstallArgs {
             all: true,
             provider: Vec::new(),
             scope: HookInstallScope::Project,
-            root: Some(repo.clone()),
+            root: Some(dir.path().to_path_buf()),
+            force: false,
+        })
+        .expect_err("project-scoped all-provider install should be rejected");
+
+        assert!(error.to_string().contains("Claude Code"));
+    }
+
+    #[test]
+    #[serial]
+    fn install_global_scope_writes_provider_files() {
+        let dir = tempdir().expect("tempdir");
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+        }
+
+        let report = run_install(&HooksInstallArgs {
+            all: true,
+            provider: Vec::new(),
+            scope: HookInstallScope::Global,
+            root: Some(dir.path().to_path_buf()),
             force: false,
         })
         .expect("install");
 
-        assert!(report.generated_files.contains(&home.join(HOOK_SCRIPT)));
         assert!(
             report
                 .generated_files
-                .contains(&home.join(CODEX_HOOKS_FILE))
+                .contains(&dir.path().join(HOOK_SCRIPT))
         );
         assert!(
             report
                 .generated_files
-                .contains(&home.join(CLAUDE_SETTINGS_FILE))
+                .contains(&dir.path().join(CODEX_HOOKS_FILE))
         );
-        assert!(!dir.path().join(".clawhip/project.json").exists());
+        assert!(
+            report
+                .generated_files
+                .contains(&dir.path().join(CLAUDE_SETTINGS_FILE))
+        );
 
         if let Some(previous) = previous_home {
             unsafe {

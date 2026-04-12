@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,11 +25,6 @@ pub const SHARED_HOOK_EVENTS: [&str; 5] = [
     "UserPromptSubmit",
     "Stop",
 ];
-const NORMALIZATION_OUTCOME_FIELD: &str = "normalization_outcome";
-
-pub const NATIVE_NORMALIZATION_OUTCOME_FIELD: &str = "normalization_outcome";
-pub const NATIVE_NON_GIT_OUTCOME: &str = "non_git";
-pub const NATIVE_GIT_OUTCOME: &str = "git";
 
 pub fn incoming_event_from_native_hook_json(
     payload: &Value,
@@ -65,25 +61,21 @@ pub fn incoming_event_from_native_hook_json(
             "/worktree_path",
         ],
     );
-    let directory = directory.and_then(|value| canonicalize_path(&value).or(Some(value)));
     let worktree_path = first_string(payload, &["/worktree_path", "/context/worktree_path"])
-        .or_else(|| directory.clone())
-        .and_then(|value| canonicalize_path(&value).or(Some(value)));
-    let repo_path = first_string(payload, &["/repo_path", "/context/repo_path"])
-        .and_then(|value| canonicalize_path(&value).or(Some(value)))
-        .or_else(|| {
-            worktree_path
-                .as_deref()
-                .and_then(infer_repo_root)
-                .map(|path| path.to_string_lossy().into_owned())
-        });
-    let normalization_outcome = if repo_path.is_some() {
-        "git"
-    } else {
-        "non_git"
-    };
+        .or_else(|| directory.clone());
+    let repo_path = first_string(payload, &["/repo_path", "/context/repo_path"]).or_else(|| {
+        worktree_path
+            .as_deref()
+            .and_then(infer_repo_root)
+            .map(|path| path.to_string_lossy().into_owned())
+    });
+    let project_metadata = load_effective_project_metadata(
+        payload,
+        repo_path.as_deref(),
+        worktree_path.as_deref().or(directory.as_deref()),
+    );
 
-    let repo_name = first_string(
+    let payload_repo_name = first_string(
         payload,
         &[
             "/repo_name",
@@ -92,13 +84,20 @@ pub fn incoming_event_from_native_hook_json(
             "/project_name",
             "/projectName",
         ],
-    )
-    .or_else(|| {
-        repo_path
-            .as_deref()
-            .or(worktree_path.as_deref())
-            .and_then(path_basename)
-    });
+    );
+    let canonical_repo_name =
+        project_metadata_string(&project_metadata, &["repo_name", "repo", "name"]).or_else(|| {
+            repo_path
+                .as_deref()
+                .or(worktree_path.as_deref())
+                .and_then(path_basename)
+        });
+    let repo_name = canonicalize_repo_name(
+        payload_repo_name,
+        canonical_repo_name,
+        repo_path.as_deref(),
+        worktree_path.as_deref(),
+    );
     let project_name = first_string(
         payload,
         &[
@@ -110,7 +109,7 @@ pub fn incoming_event_from_native_hook_json(
             "/context/projectName",
         ],
     )
-    .filter(|_| normalization_outcome == "git");
+    .or_else(|| project_metadata_string(&project_metadata, &["name", "project_name"]));
     let project_id = first_string(
         payload,
         &[
@@ -120,7 +119,7 @@ pub fn incoming_event_from_native_hook_json(
             "/context/projectId",
         ],
     )
-    .filter(|_| normalization_outcome == "git");
+    .or_else(|| project_metadata_string(&project_metadata, &["id", "project_id"]));
 
     let source = first_string(
         payload,
@@ -177,27 +176,19 @@ pub fn incoming_event_from_native_hook_json(
         "normalized_event".into(),
         json!(normalized_event_label(canonical_kind)),
     );
-    normalized.insert(
-        NORMALIZATION_OUTCOME_FIELD.into(),
-        json!(normalization_outcome),
-    );
     normalized.insert("event_payload".into(), event_payload);
     normalized.insert("payload".into(), payload.clone());
-    normalized.insert(
-        "routeable".into(),
-        json!(normalization_outcome == NATIVE_GIT_OUTCOME),
-    );
 
     if let Some(directory) = directory {
         normalized.insert("directory".into(), json!(directory));
     }
-    if let Some(worktree_path) = worktree_path.filter(|_| normalization_outcome == "git") {
+    if let Some(worktree_path) = worktree_path {
         normalized.insert("worktree_path".into(), json!(worktree_path));
     }
     if let Some(repo_path) = repo_path {
         normalized.insert("repo_path".into(), json!(repo_path));
     }
-    if let Some(repo_name) = repo_name.filter(|_| normalization_outcome == "git") {
+    if let Some(repo_name) = repo_name {
         normalized.insert("repo_name".into(), json!(repo_name));
     }
     if let Some(project_name) = project_name {
@@ -206,6 +197,9 @@ pub fn incoming_event_from_native_hook_json(
     }
     if let Some(project_id) = project_id {
         normalized.insert("project_id".into(), json!(project_id));
+    }
+    if let Some(project_metadata) = project_metadata {
+        normalized.insert("project_metadata".into(), project_metadata);
     }
     if let Some(session_id) = session_id {
         normalized.insert("session_id".into(), json!(session_id));
@@ -378,16 +372,22 @@ function runGit(args, cwd) {
   return '';
 }
 
+function loadProjectMetadata(root) {
+  const path = join(root, '.clawhip', 'project.json');
+  if (!existsSync(path)) return null;
+  return parseJson(readFileSync(path, 'utf8'), null);
+}
+
 function inferRepoRoot(cwd) {
   const commonDir = runGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd);
   if (commonDir) {
     return dirname(commonDir);
   }
-  return runGit(['rev-parse', '--show-toplevel'], cwd);
+  return runGit(['rev-parse', '--show-toplevel'], cwd) || cwd;
 }
 
 function inferWorktreeRoot(cwd) {
-  return runGit(['rev-parse', '--show-toplevel'], cwd);
+  return runGit(['rev-parse', '--show-toplevel'], cwd) || cwd;
 }
 
 function parseIntegerish(value) {
@@ -550,7 +550,6 @@ function truncate(text, maxLen = 200) {
 }
 
 function maybeWritePromptSubmitState(repoRoot, provider, eventName, input) {
-  if (!repoRoot) return;
   const normalizedEvent = String(eventName || '').trim().toLowerCase();
   if (
     normalizedEvent !== 'userpromptsubmit' &&
@@ -562,9 +561,8 @@ function maybeWritePromptSubmitState(repoRoot, provider, eventName, input) {
   }
 
   try {
-    if (!worktreeRoot) return;
     const promptText = input.prompt || input.user_prompt || input.message || '';
-    const path = join(worktreeRoot, '.clawhip', 'state', 'prompt-submit.json');
+    const path = join(repoRoot, '.clawhip', 'state', 'prompt-submit.json');
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({
       observed_at: new Date().toISOString(),
@@ -578,14 +576,12 @@ function maybeWritePromptSubmitState(repoRoot, provider, eventName, input) {
 }
 
 function maybeEnrichStopEvent(repoRoot, payload, eventName) {
-  if (!repoRoot) return;
   const normalizedEvent = String(eventName || '').trim().toLowerCase();
   if (normalizedEvent !== 'stop' && normalizedEvent !== 'sessionstop' && normalizedEvent !== 'session-stopped') {
     return;
   }
   try {
-    if (!worktreeRoot) return;
-    const path = join(worktreeRoot, '.clawhip', 'state', 'prompt-submit.json');
+    const path = join(repoRoot, '.clawhip', 'state', 'prompt-submit.json');
     if (!existsSync(path)) return;
     const raw = readFileSync(path, 'utf8');
     const state = parseJson(raw, null);
@@ -600,23 +596,28 @@ function maybeEnrichStopEvent(repoRoot, payload, eventName) {
 
 async function main() {
   const provider = arg('--provider') || process.env.CLAWHIP_PROVIDER || 'unknown';
-  const cwd = resolve(process.cwd());
+  const cwd = process.cwd();
   const raw = await readStdin();
   const input = parseJson(raw, {});
-  const directory = resolve(input.cwd || cwd);
-  const worktreeRoot = inferWorktreeRoot(directory);
-  const repoRoot = inferRepoRoot(directory);
-  const inGitRepo = Boolean(repoRoot);
+  const eventCwd = input.cwd || input.directory || cwd;
+  const worktreeRoot = inferWorktreeRoot(eventCwd);
+  const repoRoot = inferRepoRoot(eventCwd);
+  const projectMetadata =
+    loadProjectMetadata(repoRoot) ||
+    loadProjectMetadata(worktreeRoot) ||
+    loadProjectMetadata(eventCwd);
   const tmuxMetadata = collectTmuxMetadata(input, cwd);
   const eventName =
     input.hook_event_name || input.hookEventName || input.event_name || input.event || 'unknown';
   const payload = {
     provider,
     source: provider,
-    directory,
+    directory: eventCwd,
+    repo_path: repoRoot,
+    worktree_path: worktreeRoot,
+    repo_name: basename(repoRoot),
     event_name: eventName,
     hook_event_name: eventName,
-    normalization_outcome: inGitRepo ? 'git' : 'non_git',
     session_id: input.session_id || input.sessionId,
     turn_id: input.turn_id || input.turnId,
     transcript_path: input.transcript_path || input.transcriptPath,
@@ -627,30 +628,25 @@ async function main() {
     prompt: input.prompt,
     event_payload: input,
   };
-  if (worktreeRoot) {
-    payload.worktree_path = worktreeRoot;
-  }
-  if (repoRoot) {
-    payload.repo_path = repoRoot;
-  }
-  if (repoRoot || worktreeRoot) {
-    payload.repo_name = basename(repoRoot || worktreeRoot);
-    payload.normalization_outcome = 'git';
-    payload.routeable = true;
-  } else {
-    payload.normalization_outcome = 'non_git';
-    payload.routeable = false;
-  }
   if (tmuxMetadata) {
     Object.assign(payload, tmuxMetadata);
   }
-  if (inGitRepo) {
-    payload.repo_path = repoRoot;
-    payload.worktree_path = directory;
-    payload.repo_name = basename(repoRoot);
+
+  if (projectMetadata && typeof projectMetadata === 'object') {
+    payload.project_metadata = projectMetadata;
+    if (projectMetadata.name) {
+      payload.project = projectMetadata.name;
+      payload.project_name = projectMetadata.name;
+    }
+    if (projectMetadata.id) {
+      payload.project_id = projectMetadata.id;
+    }
+    if (projectMetadata.repo_name) {
+      payload.repo_name = projectMetadata.repo_name;
+    }
   }
 
-  const augmentation = inGitRepo ? await collectAugmentation(repoRoot, payload) : null;
+  const augmentation = await collectAugmentation(repoRoot, payload);
   if (augmentation) {
     payload.augmentation = augmentation;
   }
@@ -661,7 +657,7 @@ async function main() {
   const result = spawnSync('clawhip', ['native', 'hook', '--provider', provider], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    stdio: ['pipe', 'inherit', 'inherit'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   if (result.error) {
@@ -674,11 +670,17 @@ async function main() {
   }
 
   if (typeof result.status === 'number' && result.status !== 0) {
+    if (typeof result.stderr === 'string' && result.stderr.trim()) {
+      process.stderr.write(result.stderr);
+    }
     console.error(`[clawhip] native hook bridge exited with status ${result.status}`);
     process.exit(result.status);
   }
 
   if (result.signal) {
+    if (typeof result.stderr === 'string' && result.stderr.trim()) {
+      process.stderr.write(result.stderr);
+    }
     console.error(`[clawhip] native hook bridge terminated by signal ${result.signal}`);
     process.exit(1);
   }
@@ -727,6 +729,59 @@ fn normalized_event_label(kind: &str) -> &str {
     }
 }
 
+fn load_effective_project_metadata(
+    payload: &Value,
+    repo_path: Option<&str>,
+    worktree_path: Option<&str>,
+) -> Option<Value> {
+    payload
+        .get("project_metadata")
+        .cloned()
+        .or_else(|| repo_path.and_then(load_project_metadata_file))
+        .or_else(|| worktree_path.and_then(load_project_metadata_file))
+}
+
+fn load_project_metadata_file(root: &str) -> Option<Value> {
+    let path = Path::new(root).join(CLAWHIP_PROJECT_FILE);
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Value>(&raw).ok()
+}
+
+fn canonicalize_repo_name(
+    payload_repo_name: Option<String>,
+    canonical_repo_name: Option<String>,
+    repo_path: Option<&str>,
+    worktree_path: Option<&str>,
+) -> Option<String> {
+    let repo_path_basename = repo_path.and_then(path_basename);
+    let worktree_basename = worktree_path.and_then(path_basename);
+
+    match payload_repo_name {
+        Some(payload_repo_name)
+            if repo_path_basename
+                .as_deref()
+                .is_some_and(|repo_name| repo_name != payload_repo_name)
+                && worktree_basename.as_deref() == Some(payload_repo_name.as_str()) =>
+        {
+            canonical_repo_name.or(Some(payload_repo_name))
+        }
+        Some(payload_repo_name) => Some(payload_repo_name),
+        None => canonical_repo_name,
+    }
+}
+
+fn project_metadata_string(project_metadata: &Option<Value>, keys: &[&str]) -> Option<String> {
+    let metadata = project_metadata.as_ref()?.as_object()?;
+    keys.iter().find_map(|key| {
+        metadata
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
 fn infer_repo_root(directory: &str) -> Option<PathBuf> {
     // Use --git-common-dir to derive the main repo root even when inside a
     // worktree.  --show-toplevel returns the worktree root which is wrong for
@@ -767,20 +822,8 @@ fn infer_repo_root(directory: &str) -> Option<PathBuf> {
     if trimmed.is_empty() {
         None
     } else {
-        let path = PathBuf::from(trimmed);
-        Some(path.canonicalize().unwrap_or(path))
+        Some(PathBuf::from(trimmed))
     }
-}
-
-fn canonicalize_path(path: &str) -> Option<String> {
-    let candidate = Path::new(path);
-    if !candidate.exists() {
-        return None;
-    }
-    candidate
-        .canonicalize()
-        .ok()
-        .map(|value| value.to_string_lossy().into_owned())
 }
 
 fn path_basename(path: &str) -> Option<String> {
@@ -966,14 +1009,10 @@ fn copy_u64_field(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::fs;
     use tempfile::tempdir;
 
     #[test]
     fn maps_all_shared_hook_events() {
-        let dir = tempdir().expect("tempdir");
-        let repo = dir.path().join("clawhip");
-        git_init_repo(&repo);
         let cases = [
             ("SessionStart", "codex", "session.started"),
             ("PreToolUse", "codex", "tool.pre"),
@@ -989,7 +1028,7 @@ mod tests {
         for (event_name, provider, expected_kind) in cases {
             let event = incoming_event_from_native_hook_json(&json!({
                 "provider": provider,
-                "directory": repo,
+                "directory": "/repo/clawhip",
                 "event_name": event_name,
                 "event_payload": {
                     "tool_name": "Bash",
@@ -1007,26 +1046,15 @@ mod tests {
     }
 
     #[test]
-    fn ignores_project_metadata_from_project_json_for_routing_identity() {
+    fn loads_project_metadata_from_project_json() {
         let dir = tempdir().expect("tempdir");
-        let repo = dir.path().join("repo");
-        std::fs::create_dir_all(repo.join(".clawhip")).unwrap();
-        let output = Command::new("git")
-            .args(["init"])
-            .current_dir(&repo)
-            .output()
-            .expect("git init");
-        assert!(
-            output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        fs::create_dir_all(dir.path().join(".clawhip")).unwrap();
         fs::write(
-            repo.join(CLAWHIP_PROJECT_FILE),
+            dir.path().join(CLAWHIP_PROJECT_FILE),
             serde_json::to_string_pretty(&json!({
                 "id": "clawhip-core",
-                "name": "wrong-name",
-                "repo_name": "wrong-name"
+                "name": "clawhip",
+                "repo_name": "clawhip"
             }))
             .unwrap(),
         )
@@ -1034,45 +1062,25 @@ mod tests {
 
         let event = incoming_event_from_native_hook_json(&json!({
             "provider": "codex",
-            "directory": repo,
+            "directory": dir.path(),
             "event_name": "SessionStart",
             "event_payload": {}
         }))
         .expect("event");
 
-        assert_eq!(event.payload["repo_name"], json!("repo"));
-        assert_eq!(event.payload["normalization_outcome"], json!("git"));
-        assert!(event.payload.get("project_metadata").is_none());
-    }
-
-    #[test]
-    fn marks_non_git_native_payloads_and_omits_repo_fields() {
-        let dir = tempdir().expect("tempdir");
-        let scratch = dir.path().join("scratch");
-        std::fs::create_dir_all(&scratch).expect("create scratch");
-
-        let event = incoming_event_from_native_hook_json(&json!({
-            "provider": "codex",
-            "directory": scratch,
-            "event_name": "SessionStart",
-            "event_payload": {}
-        }))
-        .expect("event");
-
-        assert_eq!(event.payload["normalization_outcome"], json!("non_git"));
-        assert!(event.payload.get("repo_path").is_none());
-        assert!(event.payload.get("worktree_path").is_none());
-        assert!(event.payload.get("repo_name").is_none());
+        assert_eq!(event.payload["project_id"], json!("clawhip-core"));
+        assert_eq!(event.payload["project_name"], json!("clawhip"));
+        assert_eq!(
+            event.payload["project_metadata"]["repo_name"],
+            json!("clawhip")
+        );
     }
 
     #[test]
     fn augmentation_can_add_context_without_overriding_base_fields() {
-        let dir = tempdir().expect("tempdir");
-        let repo = dir.path().join("clawhip");
-        git_init_repo(&repo);
         let event = incoming_event_from_native_hook_json(&json!({
             "provider": "claude-code",
-            "directory": repo,
+            "directory": "/repo/clawhip",
             "event_name": "SessionStart",
             "augmentation": {
                 "summary": "extra setup context",
@@ -1107,7 +1115,7 @@ mod tests {
     #[test]
     fn generated_hook_script_surfaces_bridge_failures() {
         let script = generated_hook_script();
-        assert!(script.contains("stdio: ['pipe', 'inherit', 'inherit']"));
+        assert!(script.contains("stdio: ['pipe', 'pipe', 'pipe']"));
         assert!(script.contains("failed to launch native hook bridge"));
         assert!(script.contains("native hook bridge exited with status"));
         assert!(script.contains("native hook bridge terminated by signal"));
@@ -1236,8 +1244,8 @@ mod tests {
         assert!(script.contains("function inferRepoRoot(cwd)"));
         assert!(script.contains("function inferWorktreeRoot(cwd)"));
         assert!(script.contains("--git-common-dir"));
-        assert!(script.contains("normalization_outcome"));
-        assert!(!script.contains("loadProjectMetadata"));
+        assert!(script.contains("const eventCwd = input.cwd || input.directory || cwd;"));
+        assert!(script.contains("loadProjectMetadata(worktreeRoot)"));
     }
 
     #[test]
@@ -1245,7 +1253,22 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(&repo).expect("create repo dir");
-        init_git_repo(&repo);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        git(&repo, &["init"]);
         std::fs::write(repo.join("README.md"), "init\n").expect("write");
         git(&repo, &["add", "README.md"]);
         git(
@@ -1277,21 +1300,161 @@ mod tests {
         );
     }
 
-    fn init_git_repo(dir: &std::path::Path) {
-        git(dir, &["init"]);
+    #[test]
+    fn canonicalizes_repo_name_when_payload_uses_worktree_leaf() {
+        let event = incoming_event_from_native_hook_json(&json!({
+            "provider": "codex",
+            "event_name": "UserPromptSubmit",
+            "repo_name": "launch-fix-native-hook-malfunction",
+            "repo_path": "/mnt/offloading/Workspace/clawhip",
+            "worktree_path": "/mnt/offloading/Workspace/clawhip.omx-worktrees/launch-fix-native-hook-malfunction",
+            "event_payload": {}
+        }))
+        .expect("event");
+
+        assert_eq!(event.payload["repo_name"], json!("clawhip"));
+        assert_eq!(
+            event.payload["worktree_path"],
+            json!(
+                "/mnt/offloading/Workspace/clawhip.omx-worktrees/launch-fix-native-hook-malfunction"
+            )
+        );
     }
 
-    fn git(dir: &std::path::Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git");
+    #[test]
+    fn generated_hook_script_e2e_emits_canonical_repo_metadata_from_event_cwd() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Stdio;
+
+        let node_check = Command::new("node").arg("--version").output();
+        let Ok(node_check) = node_check else {
+            eprintln!("skipping native hook e2e: node unavailable");
+            return;
+        };
+        if !node_check.status.success() {
+            eprintln!("skipping native hook e2e: node unavailable");
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        git(&repo, &["init"]);
+        std::fs::create_dir_all(repo.join(".clawhip")).expect("create clawhip dir");
+        std::fs::write(
+            repo.join(".clawhip/project.json"),
+            r#"{"name":"clawhip","repo_name":"clawhip"}"#,
+        )
+        .expect("write project metadata");
+        std::fs::write(repo.join("README.md"), "init\n").expect("write");
+        git(&repo, &["add", "README.md", ".clawhip/project.json"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+        git(&repo, &["branch", "issue-212"]);
+
+        let wt = temp.path().join("wt-issue-212");
+        git(
+            &repo,
+            &["worktree", "add", &wt.to_string_lossy(), "issue-212"],
+        );
+        let nested = wt.join("src/bin");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+
+        let hook_dir = repo.join(".clawhip/hooks");
+        std::fs::create_dir_all(&hook_dir).expect("create hook dir");
+        let hook_path = hook_dir.join("native-hook.mjs");
+        std::fs::write(&hook_path, generated_hook_script()).expect("write hook script");
+        let mut hook_perms = std::fs::metadata(&hook_path)
+            .expect("hook metadata")
+            .permissions();
+        hook_perms.set_mode(0o755);
+        std::fs::set_permissions(&hook_path, hook_perms).expect("chmod hook");
+
+        let fake_bin = temp.path().join("bin");
+        std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+        let capture_path = temp.path().join("captured.json");
+        let fake_clawhip = fake_bin.join("clawhip");
+        std::fs::write(
+            &fake_clawhip,
+            format!("#!/bin/sh\ncat > '{}'\nexit 0\n", capture_path.display()),
+        )
+        .expect("write fake clawhip");
+        let mut fake_perms = std::fs::metadata(&fake_clawhip)
+            .expect("fake metadata")
+            .permissions();
+        fake_perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_clawhip, fake_perms).expect("chmod fake clawhip");
+
+        let path = std::env::var("PATH").unwrap_or_default();
+        let mut child = Command::new("node")
+            .arg(&hook_path)
+            .arg("--provider")
+            .arg("codex")
+            .current_dir(&nested)
+            .env("PATH", format!("{}:{path}", fake_bin.display()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn node hook");
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(
+                format!(
+                    r#"{{"event_name":"UserPromptSubmit","cwd":"{}","prompt":"Ship it"}}"#,
+                    nested.display()
+                )
+                .as_bytes(),
+            )
+            .expect("write payload");
+        let output = child.wait_with_output().expect("wait for hook");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "stderr: {stderr}");
+
+        let captured: Value =
+            serde_json::from_str(&std::fs::read_to_string(&capture_path).expect("capture payload"))
+                .expect("captured json");
+        assert_eq!(
+            captured["repo_path"],
+            json!(repo.canonicalize().expect("canonical repo"))
+        );
+        assert_eq!(
+            captured["worktree_path"],
+            json!(wt.canonicalize().expect("canonical worktree"))
+        );
+        assert_eq!(captured["repo_name"], json!("clawhip"));
+        assert_eq!(captured["project_name"], json!("clawhip"));
         assert!(
-            out.status.success(),
-            "git {:?}: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
+            wt.join(".clawhip/state/prompt-submit.json").is_file(),
+            "prompt-submit marker should be stored in the worktree root"
         );
     }
 
@@ -1374,19 +1537,5 @@ mod tests {
         assert!(script.contains("prompt_summary"));
         assert!(script.contains("stop_context"));
         assert!(script.contains("last_prompt_summary"));
-    }
-
-    fn git_init_repo(repo: &Path) {
-        std::fs::create_dir_all(repo).expect("create repo");
-        let output = Command::new("git")
-            .args(["init"])
-            .current_dir(repo)
-            .output()
-            .expect("git init");
-        assert!(
-            output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }
