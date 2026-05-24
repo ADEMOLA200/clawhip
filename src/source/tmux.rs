@@ -111,6 +111,15 @@ impl Source for TmuxSource {
         let mut state = TmuxMonitorState::default();
 
         loop {
+            if self.config.monitors.tmux.sessions.is_empty()
+                && self.registry.read().await.is_empty()
+            {
+                sleep(Duration::from_secs(
+                    self.config.monitors.poll_interval_secs.max(1),
+                ))
+                .await;
+                continue;
+            }
             poll_tmux(self.config.as_ref(), &self.registry, &tx, &mut state).await?;
             sleep(Duration::from_secs(
                 self.config.monitors.poll_interval_secs.max(1),
@@ -1269,6 +1278,60 @@ PR created #7",
         assert_eq!(registry["issue-105"].keywords, vec!["error", "complete"]);
         assert!(registry.contains_key("wrapper"));
         assert!(!registry.contains_key("stale-config"));
+    }
+
+    #[test]
+    fn merge_active_config_registrations_skips_active_wrapper_monitor_sessions() {
+        let mut registry = HashMap::from([(
+            "issue-226".into(),
+            RegisteredTmuxSession {
+                session: "issue-226".into(),
+                channel: Some("wrapper-alerts".into()),
+                mention: None,
+                routing: RoutingMetadata::default(),
+                keywords: vec!["wrapper-keyword".into()],
+                keyword_window_secs: 30,
+                stale_minutes: 10,
+                format: None,
+                registered_at: "2026-04-02T01:00:00Z".into(),
+                registration_source: RegistrationSource::CliNew,
+                parent_process: Some(ParentProcessInfo {
+                    pid: 42,
+                    name: Some("codex".into()),
+                }),
+                active_wrapper_monitor: true,
+            },
+        )]);
+
+        merge_active_config_registrations(
+            &mut registry,
+            BTreeMap::from([(
+                "issue-226".into(),
+                RegisteredTmuxSession {
+                    session: "issue-226".into(),
+                    channel: Some("config-alerts".into()),
+                    mention: None,
+                    routing: RoutingMetadata::default(),
+                    keywords: vec!["config-keyword".into()],
+                    keyword_window_secs: 30,
+                    stale_minutes: 10,
+                    format: None,
+                    registered_at: "2026-04-02T09:00:00Z".into(),
+                    registration_source: RegistrationSource::ConfigMonitor,
+                    parent_process: None,
+                    active_wrapper_monitor: false,
+                },
+            )]),
+        );
+
+        let registration = registry.get("issue-226").expect("wrapper registration");
+        assert!(registration.active_wrapper_monitor);
+        assert!(matches!(
+            registration.registration_source,
+            RegistrationSource::CliNew
+        ));
+        assert_eq!(registration.channel.as_deref(), Some("wrapper-alerts"));
+        assert_eq!(registration.keywords, vec!["wrapper-keyword"]);
     }
 
     #[test]
