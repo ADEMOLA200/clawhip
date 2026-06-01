@@ -106,6 +106,11 @@ pub fn collect_bindings(config: &AppConfig) -> Vec<ChannelBinding> {
                 label,
             });
         }
+
+        // Discord threads are intentionally excluded from channel-binding
+        // verification. The public verify-bindings output is a channel audit;
+        // treating thread IDs as channel IDs would expose private thread
+        // identifiers and live thread names through text/JSON diagnostics.
     }
 
     // git monitors
@@ -351,6 +356,7 @@ mod tests {
             event: "*".into(),
             filter,
             channel: Some("222".into()),
+            thread: None,
             channel_name: Some("clawhip-dev".into()),
             ..RouteRule::default()
         }]);
@@ -359,6 +365,47 @@ mod tests {
         assert_eq!(bindings[0].channel_id, "222");
         assert_eq!(bindings[0].expected_name.as_deref(), Some("clawhip-dev"));
         assert!(bindings[0].label.contains("repo=clawhip"));
+    }
+
+    #[test]
+    fn skips_route_thread_binding_to_keep_diagnostics_public_safe() {
+        let config = config_with_routes(vec![RouteRule {
+            event: "session.*".into(),
+            thread: Some("123456789012345678".into()),
+            channel_name: Some("private-thread-name".into()),
+            ..RouteRule::default()
+        }]);
+
+        let bindings = collect_bindings(&config);
+
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn audit_text_and_json_do_not_expose_thread_id_or_name() {
+        let config = config_with_routes(vec![RouteRule {
+            event: "session.*".into(),
+            thread: Some("123456789012345678".into()),
+            channel_name: Some("private-thread-name".into()),
+            ..RouteRule::default()
+        }]);
+        let audit = BindingAudit {
+            verdicts: collect_bindings(&config)
+                .into_iter()
+                .map(|binding| BindingVerdict {
+                    binding,
+                    verdict: VerdictKind::NoToken,
+                })
+                .collect(),
+        };
+
+        let text = audit.to_string();
+        let json = serde_json::to_string(&audit).unwrap();
+
+        for rendered in [text, json] {
+            assert!(!rendered.contains("123456789012345678"));
+            assert!(!rendered.contains("private-thread-name"));
+        }
     }
 
     #[test]
