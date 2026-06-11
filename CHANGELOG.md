@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.10 - 2026-06-11
+
+### Highlights
+
+- add GAJAE receipt ingestion, profile inspection, safe handler execution, integration preflight, doctor diagnostics, mutation plans, and approval hold events so clawhip can route operator decisions through public-safe receipts instead of ad-hoc followups
+- suppress zero-backlog GAJAE followups while still emitting explicit public-safe checkpoint/notice events for auditability
+- auto-scaffold public-safe channel repository profiles from memory context to reduce routing drift
+- make GitHub API rate-limit fallback explicit in cron follow-up observations
+- warn operators when an environment Discord token shadows the configured token, preventing confusing production token precedence surprises
+
+### Upgrade notes
+
+- crate version is now `0.6.10`
+- existing route/config schema remains compatible; no migration required
+- this release is tagged from the verified `dev` line; `main` still needs a separate sync conflict cleanup before it can mirror the release line
+
 ## 0.6.9 - 2026-06-04
 
 ### Highlights
