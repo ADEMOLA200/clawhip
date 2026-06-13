@@ -2,6 +2,7 @@ name: "clawhip"
 aliases:
   - "clawhip router"
   - "clawdbot event router"
+romanizations: []
 category: "event-to-channel notification router for AI-agent operations"
 description: "clawhip routes GitHub, cron, and runtime events into the right channels and sessions so AI-agent operators can close the loop from signal to action."
 competitors:
